@@ -1,0 +1,29 @@
+{
+    "global": {
+    // run as daemon
+    "daemon": true,
+    // where to send log to: syslog:daemon, stderr, file:/path/file
+    "log": "syslog:daemon",
+    // pid file
+    //"pidfile": "/var/run/cdns.pid",
+    // enable or disable debug info
+    "log_debug": false
+    },
+    "cdns": {
+        // local server listen address and port
+        "listen_ip": "127.0.0.1",
+        "listen_port": 1053,
+        // Timeout for each DNS request
+        "timeout": 2,
+        // List of upstream DNS servers
+        "servers": [
+        {
+            "ip_port": "203.80.96.10"
+        },
+        {
+            "ip_port": "8.8.8.8:53"
+        }
+        ]
+    }
+}
+

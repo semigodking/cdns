@@ -33,7 +33,7 @@ cross compile. This is an example:
 	export STAGING_DIR=/openwrt_cc/staging_dir/toolchain-mips_mips32_gcc-4.8-linaro_uClibc-0.9.33.2/
 	export TARGET_DIR=/openwrt_cc/staging_dir/target-mips_mips32_uClibc-0.9.33.2
 	export CFLAGS="-mips32 -mtune=mips32 -I$TARGET_DIR/usr/include/ -L$TARGET_DIR/usr/lib/"
-	make CC=mips-openwrt-linux-gcc LD=mips-openwrt-linux-ld STATIC_LIBS=$TARGET_DIR/usr/lib/libargp.a
+	make CC=mips-openwrt-linux-gcc LD=mips-openwrt-linux-ld
 
 # HOW TO RUN
 Run cdns like this:
@@ -44,7 +44,7 @@ Run cdns like this:
 You can create your configuration file based on 'config.json.example'.
 
 
-#AUTHOR
-[Zhuofei Wang](mailto:semigodking.com) semigodking@gmail.com
+# AUTHOR
+[Zhuofei Wang](mailto:semigodking.com): semigodking@gmail.com
 
 

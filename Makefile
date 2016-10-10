@@ -1,15 +1,21 @@
 
 OS := $(shell uname)
-LIBS := -levent -lm
-STATIC_LIBS := 
+LIBS := -levent -lm -largp
 CFLAGS +=-fPIC -O3
 override CFLAGS += -D_BSD_SOURCE -D_DEFAULT_SOURCE
 ifeq ($(OS), Linux)
 override CFLAGS += -std=c99 -D_XOPEN_SOURCE=600
 endif
 
-all: main.c log.c cfg.c json.c cdns.c
-	$(CC) -o cdns $(CFLAGS) $(LIBS) $^ $(STATIC_LIBS)
+OBJ = main.o log.o cfg.o json.o cdns.o
+
+%.o: %.c $(DEPS)
+	$(CC) -c -o $@ $< $(CFLAGS)
+
+cdns: $(OBJ)
+	$(CC) -o $@ $(CFLAGS) $^ $(LIBS)
+
+all: cdns
 
 clean:
 	rm -f *.o cdns

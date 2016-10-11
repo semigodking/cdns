@@ -15,6 +15,7 @@
  */
 #include <stdlib.h>
 #include <string.h>
+#include <search.h>
 #include <sys/types.h>
 #include <sys/uio.h>
 #include <unistd.h>
@@ -208,6 +209,49 @@ bool cdns_validate_cfg()
     return rc;
 }
 
+/***********************************************************************/
+struct ipv4_key {
+    struct in_addr sin_addr;
+} PACKED;
+
+static void* ipv4_blacklist_root = NULL; 
+
+static int ipv4_key_cmp(const void *a, const void *b)
+{
+     if (a == b)
+         return 0;
+     else if (a< b)
+         return -1;
+     else
+         return 1; 
+}
+
+static void blacklist_add_v4(struct ipv4_key * key)
+{
+    uint32_t addr = key->sin_addr.s_addr;
+    tsearch((void *)addr, &ipv4_blacklist_root, ipv4_key_cmp); 
+}
+
+static void * blacklist_find_v4(struct ipv4_key * key)
+{
+    uint32_t addr = key->sin_addr.s_addr;
+    return tfind((void *)addr, &ipv4_blacklist_root, ipv4_key_cmp);
+}
+
+/*
+static void _blacklist_freenode(void *nodep)
+{
+}
+
+static void blacklist_reset_v4()
+{
+    if (ipv4_blacklist_root) {
+        tdestroy(ipv4_blacklist_root, _blacklist_freenode);
+        ipv4_blacklist_root = NULL;
+    }
+}
+*/
+
 /***********************************************************************
  * Logic
  */
@@ -384,6 +428,17 @@ static size_t append_edns_opt(char * req, size_t len, size_t max_len)
     return len + sizeof(edns_opt);
 }
 
+static void add_to_blacklist(const char * rsp, size_t len)
+{
+    const char * p = get_answered_IP(rsp, len);
+    if (p) {
+        uint16_t rdlength = ntohs(*(const uint16_t *)p);
+        p += sizeof(uint16_t);
+        blacklist_add_v4((struct ipv4_key *)p);
+        log_error(LOG_DEBUG, "Add to blacklist: %x %d.%d.%d.%d", rdlength, p[0], p[1], p[2], p[3]);
+    }
+}
+
 static int verify_request(const char * req, size_t len)
 {
     struct dns_header_t * header = (struct dns_header_t *)req;
@@ -420,6 +475,7 @@ static int verify_response(dns_request * req, const char * rsp, size_t len)
         }
         else {
             log_error(LOG_DEBUG, "Bad response");
+            add_to_blacklist(rsp, len);
             return -1;
         }
     }
@@ -433,15 +489,19 @@ static int verify_response(dns_request * req, const char * rsp, size_t len)
        ) {
         return 1;
     }
-    // TODO: 
     // Bad Responses:
-    //   1. IP returned in black list
-    return 0;
-}
+    //   1. IP returned in blacklist
+    const char * p = get_answered_IP(rsp, len);
+    if (p) {
+        uint16_t rdlength = ntohs(*(const uint16_t *)p);
+        p += sizeof(uint16_t);
+        if (blacklist_find_v4((struct ipv4_key *)p)){
+            log_error(LOG_DEBUG, "Found in blacklist: %x %d.%d.%d.%d", rdlength, p[0], p[1], p[2], p[3]);
+            return -1;
+        }
+    }
 
-static void add_to_blacklist(const char * rsp, size_t len)
-{
-    // TODO:
+    return 0;
 }
 
 static void cdns_drop_request(dns_request * req)
@@ -743,7 +803,7 @@ static void test_readcb(int fd, short what, void *_arg)
     if (!req->server->edns_udp_size) {
         req->server->edns_udp_size = get_edns_udp_payload_size(&buf[0], pktlen);
         if (req->server->edns_udp_size)
-            log_error(LOG_INFO, "Cool! DNS server %s:%d supports EDNS with UDP payload size: %u",
+            log_error(LOG_INFO, "Cool! DNS server %s:%u supports EDNS with UDP payload size: %u",
                     evutil_inet_ntop(req->server->addr.sin_family,
                         &req->server->addr.sin_addr,
                         &buf[0],
@@ -966,7 +1026,7 @@ void cdns_debug_dump()
     log_error(LOG_INFO, "Dumping data for DNS servers:");
 
     for (int i = 0; i < g_svr_count; i++) 
-        log_error(LOG_INFO, "DNS %s:%d:  avg rtt: %5dms",
+        log_error(LOG_INFO, "DNS %s:%u:  avg rtt: %ums",
                             evutil_inet_ntop(g_svr_cfg[i].addr.sin_family,
                                              &g_svr_cfg[i].addr.sin_addr,
                                              &buf[0],

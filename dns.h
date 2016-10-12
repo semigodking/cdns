@@ -1,7 +1,7 @@
 #ifndef DNS_H_SAT_OCT_08_13_56_39_2016
 #define DNS_H_SAT_OCT_08_13_56_39_2016
 
-#include <sys/types.h>
+#include <stdint.h>
 
 #define DNS_DEFAULT_PORT 53
 
@@ -26,6 +26,7 @@
 #define QTYPE_MD         3
 #define QTYPE_MF         4
 #define QTYPE_CNNAME     5
+#define QTYPE_AAAA      28
 
 #define CLASS_IN         1
 
@@ -40,6 +41,11 @@ typedef struct dns_header_t {
     uint16_t arcount;
 } dns_header;
 #pragma pack()
+
+size_t append_edns_opt(char * buf, size_t len, size_t max_len);
+const char * get_answered_ip(const char * rsp, size_t len);
+uint16_t get_edns_udp_payload_size(const char * rsp, size_t len);
+size_t build_dns_query(char * buf, size_t size, const char * dn, int edns);
 
 /* vim:set tabstop=4 softtabstop=4 shiftwidth=4: */
 /* vim:set foldmethod=marker foldlevel=32 foldmarker={,}: */

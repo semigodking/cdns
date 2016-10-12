@@ -22,7 +22,6 @@
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
-#include <assert.h>
 #include <errno.h>
 
 #include "event2/event.h"
@@ -36,10 +35,6 @@
 #define DEFAULT_BUFFER_SIZE 4096
 
 #define FLAG_TEST 0x01
-
-static const char edns_opt[] = {
-     0x00, 0x00, 0x29, 0x10, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // EDNS OPT
-};
 
 struct server_info {
     char *   ip_port;
@@ -252,6 +247,17 @@ static void blacklist_reset_v4()
 }
 */
 
+static void add_to_blacklist(const char * rsp, size_t len)
+{
+    const char * p = get_answered_ip(rsp, len);
+    if (p) {
+        uint16_t rdlength = ntohs(*(const uint16_t *)p);
+        p += sizeof(uint16_t);
+        blacklist_add_v4((struct ipv4_key *)p);
+        log_error(LOG_DEBUG, "Add to blacklist: %x %u.%u.%u.%u", rdlength, p[0], p[1], p[2], p[3]);
+    }
+}
+
 /***********************************************************************
  * Logic
  */
@@ -270,173 +276,6 @@ static void update_server_rtt(struct server_info * svr, int rtt_ms)
     for (int i = 0; i < svr->rtt_count; i++)
         sum += svr->rtt[i];
     svr->avg_rtt = sum / svr->rtt_count;
-}
-
-static const char * _dns_skip_questions(uint16_t qdcount, const char * p)
-{
-    int i;
-    // skip questions
-    for (i = 0; i < qdcount; i++) {
-        // skip QNAME
-        while (*p != 0)
-            p += (*p + 1);
-        p += 1;
-        // skip QTYPE
-        p += sizeof(uint16_t);
-        // skip QCLASS
-        p += sizeof(uint16_t);
-    }
-    return p;
-}
-
-static const char * _dns_skip_resources(uint16_t count, const char * p)
-{
-    int i;
-    // skip resources
-    for (i = 0; i < count; i++) {
-        // skip QNAME
-        if ((*p & 0xC0) == 0xC0) // compressed QNAME
-            p += sizeof(uint16_t);
-        else {
-            while (*p != 0)
-                 p += (*p + 1);
-            p += 1;
-        }
-        // QTYPE
-        p += sizeof(uint16_t);
-        // QCLASS
-        p += sizeof(uint16_t);
-        // TTL
-        p += sizeof(uint32_t);
-        // skip rdlength & rdata
-        uint16_t rdlength = ntohs(*(uint16_t *)p);
-        p += sizeof(uint16_t) + rdlength;
-    }
-    return p;
-}
-
-static uint16_t get_edns_udp_payload_size(const char * rsp, size_t len)
-{
-    struct dns_header_t * header = (struct dns_header_t *)rsp;
-    const char * p = (const char *)header;
-    int i;
-
-    if (len <= sizeof(*header) || ntohs(header->arcount) == 0)
-        return 0;
-    
-    // skip header
-    p += sizeof(*header);
-    // skip questions
-    p = _dns_skip_questions(ntohs(header->qdcount), p);
-    // skip answers
-    p = _dns_skip_resources(ntohs(header->ancount), p);
-    // skip resources
-    p = _dns_skip_resources(ntohs(header->nscount), p);
-
-    // Check options
-/*
-+------------+--------------+------------------------------+
-| Field Name | Field Type   | Description                  |
-+------------+--------------+------------------------------+
-| NAME       | domain name  | MUST be 0 (root domain)      |
-| TYPE       | u_int16_t    | OPT (41)                     |
-| CLASS      | u_int16_t    | requestor's UDP payload size |
-| TTL        | u_int32_t    | extended RCODE and flags     |
-| RDLEN      | u_int16_t    | length of all RDATA          |
-| RDATA      | octet stream | {attribute,value} pairs      |
-+------------+--------------+------------------------------+
-*/
-    for (i = 0; i < ntohs(header->arcount); i++) {
-        if (*p == 0 && *(uint16_t *)(p + 1) == htons(41)) {
-            return ntohs(*(uint16_t *)(p + 1 + sizeof(uint16_t)));
-        }
-        // skip QNAME
-        if ((*p & 0xC0) == 0xC0) // compressed QNAME
-            p += sizeof(uint16_t);
-        else {
-            while (*p != 0)
-                 p += (*p + 1);
-            p += 1;
-        }
-        // QTYPE
-        p += sizeof(uint16_t);
-        // QCLASS
-        p += sizeof(uint16_t);
-        // TTL
-        p += sizeof(uint32_t);
-        // skip rdlength & rdata
-        uint16_t rdlength = ntohs(*(uint16_t *)p);
-        p += sizeof(uint16_t) + rdlength;
-    }
-    return 0;
-}
-
-static const char * get_answered_IP(const char * rsp, size_t len)
-{
-    struct dns_header_t * header = (struct dns_header_t *)rsp;
-    const char * p = (const char *)header;
-    int i;
-
-    if (len <= sizeof(*header) || ntohs(header->ancount) == 0)
-        return NULL;
-
-    // skip header
-    p += sizeof(*header);
-    // skip questions
-    p = _dns_skip_questions(ntohs(header->qdcount), p);
-    // check answers
-    for (i = 0; i < ntohs(header->ancount); i++) {
-        // skip QNAME
-        if ((*p & 0xC0) == 0xC0) // compressed QNAME
-            p += sizeof(uint16_t);
-        else {
-            while (*p != 0)
-                 p += (*p + 1);
-            p += 1;
-        }
-        //  TYPE
-        uint16_t qtype = ntohs(*(uint16_t *)p);
-        p += sizeof(uint16_t);
-        uint16_t qclass = ntohs(*(uint16_t *)p); 
-        p += sizeof(uint16_t);
-        // skip TTL
-        p += sizeof(uint32_t);
-        // skip 
-        if (qtype == QTYPE_A && qclass == CLASS_IN)
-            return p;
-        // skip rdlength & rdata
-        uint16_t rdlength = ntohs(*(uint16_t *)p);
-        p += sizeof(uint16_t) + rdlength;
-    }
-    return NULL;
-}
-
-static size_t append_edns_opt(char * req, size_t len, size_t max_len)
-{
-    struct dns_header_t * header = (struct dns_header_t *)req;
-    if (len < sizeof(*header))
-        return len;
-
-    uint16_t size = get_edns_udp_payload_size(req, len);
-    if (size)
-        return len;
-     
-    if (max_len >= len + sizeof(edns_opt)) {
-        memcpy(req + len, edns_opt, sizeof(edns_opt));
-        header->arcount = htons(ntohs(header->arcount) + 1);
-    }
-    return len + sizeof(edns_opt);
-}
-
-static void add_to_blacklist(const char * rsp, size_t len)
-{
-    const char * p = get_answered_IP(rsp, len);
-    if (p) {
-        uint16_t rdlength = ntohs(*(const uint16_t *)p);
-        p += sizeof(uint16_t);
-        blacklist_add_v4((struct ipv4_key *)p);
-        log_error(LOG_DEBUG, "Add to blacklist: %x %d.%d.%d.%d", rdlength, p[0], p[1], p[2], p[3]);
-    }
 }
 
 static int verify_request(const char * req, size_t len)
@@ -491,12 +330,12 @@ static int verify_response(dns_request * req, const char * rsp, size_t len)
     }
     // Bad Responses:
     //   1. IP returned in blacklist
-    const char * p = get_answered_IP(rsp, len);
+    const char * p = get_answered_ip(rsp, len);
     if (p) {
         uint16_t rdlength = ntohs(*(const uint16_t *)p);
         p += sizeof(uint16_t);
         if (blacklist_find_v4((struct ipv4_key *)p)){
-            log_error(LOG_DEBUG, "Found in blacklist: %x %d.%d.%d.%d", rdlength, p[0], p[1], p[2], p[3]);
+            log_error(LOG_DEBUG, "Found in blacklist: %x %u.%u.%u.%u", rdlength, p[0], p[1], p[2], p[3]);
             return -1;
         }
     }
@@ -539,7 +378,9 @@ static void cdns_readcb(int fd, short what, void *_arg)
 
     // learn
     if (req->state == STATE_RESPONSE_SENT) {
-        add_to_blacklist(&buf[0], pktlen);
+        // TODO: Unreachable
+        if (pktlen >= sizeof(struct dns_header_t))
+            add_to_blacklist(&buf[0], pktlen);
         goto finish;
     }
     // Calculate round trip time
@@ -548,8 +389,8 @@ static void cdns_readcb(int fd, short what, void *_arg)
     int rtt_ms = rtt.tv_sec * 1000 + rtt.tv_usec/1000;
     
     rc = verify_response(req, &buf[0], pktlen);
-    log_error(LOG_DEBUG, "rtt_ms: %d  avg rtt: %d   verify_rc: %d",
-                         rtt_ms, svr->avg_rtt, rc);
+    log_error(LOG_DEBUG, "pktlen: %u rtt_ms: %d avg rtt: %d verify_rc: %d",
+                         pktlen, rtt_ms, svr->avg_rtt, rc);
     if (rc < 0)
         goto continue_waiting;
     if (rc > 0)
@@ -606,15 +447,16 @@ _choose_server(struct server_info ** pservers, int count)
     // no server available
     if (count < 1)
         return NULL;
-    // hardcoded limitation of 16 servers
-    if (count > 16)
-        count = 16;
     // get a list of servers with valid address
     n = 0;
     for (i = 0; i < count; i++) {
-        if (pservers[i]->addr.sin_addr.s_addr != htonl(INADDR_ANY)) {
+        if (pservers[i]->addr.sin_addr.s_addr != htonl(INADDR_ANY)
+           && pservers[i]->addr.sin_port != 0) {
             valid_servers[n] = pservers[i];
             n += 1;
+            // hardcoded limitation of 16 servers
+            if (n >= MAX_SERVERS)
+                break;
         }
     }
     count = n;
@@ -632,20 +474,14 @@ _choose_server(struct server_info ** pservers, int count)
             servers[n] = valid_servers[i];
             n += 1;
         }
-    }  
-    // return server with min RTT
-    // find out first server with non-null RTT 
+    }
+    // find out the one with min RTT
     struct server_info * svr = NULL;
     for (i = 0; i < n; i++)
         if (servers[i]->avg_rtt > 0) {
-            svr = servers[i];
-            break;
+            if (!svr || servers[i]->avg_rtt < svr->avg_rtt)
+                svr = servers[i];
         }
-    // find out the one with min RTT
-    for (i++; i < n; i++) {
-        if (servers[i]->avg_rtt < svr->avg_rtt)
-            svr = servers[i];
-    }
     // No server with RTT updated, return random one
     if (!svr && n) {
         uint16_t r;
@@ -833,54 +669,6 @@ finish:
     close(fd);
 }
 
-static size_t build_query(char * buf, size_t size, const char * dn, int edns)
-{
-    static char query_hdr[] = {0x10, 0x33,
-                  0x01, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01,
-                  };
-    static char query_parm[] = {0x00, 0x01, 0x00, 0x01};
-    static char edns_opt[] = {
-                  0x00, 0x00, 0x29, 0x10, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // EDNS OPT
-                  };
-    size_t rc = sizeof(query_hdr) + sizeof(query_parm) + strlen(dn) + 2;
-    rc += (edns ? sizeof(edns_opt) : 0);
-
-    char * p = buf;
-    if (buf && size >= rc) {
-        memcpy(p, query_hdr, sizeof(query_hdr));
-        p += sizeof(query_hdr);
-
-        for (;;) {
-           char * t = strchr(dn, '.');
-           if (!t) {
-               *p = (char)(strlen(dn));
-               p += 1;
-               strcpy(p, dn);
-               p += strlen(dn) + 1;
-               break;
-           }
-           else {
-               *p = (char)(t - dn);
-               p += 1;
-               memcpy(p, dn, (t - dn));
-               p += t - dn;
-               dn = t + 1;
-           }
-        }
-
-        memcpy(p, query_parm, sizeof(query_parm));
-        p += sizeof(query_parm);
-        if (edns) {
-            memcpy(p, edns_opt, sizeof(edns_opt));
-            p += sizeof(edns_opt);
-        }
-        assert(p - buf == rc);
-        // generate random id
-        evutil_secure_rng_get_bytes(buf, sizeof(uint16_t));
-    }
-    return rc;
-}
-
 static void _test_dns(struct event_base * base, struct server_info * svr, const char * query, size_t len)
 {
     struct sockaddr_in * destaddr = &svr->addr;
@@ -935,9 +723,12 @@ static void test_dns(struct event_base * base, struct server_info * svr)
     char ** dn;
 
     FOREACH(dn, dn_to_test) {
-        sz = build_query(&buf[0], sizeof(buf), *dn, true);
-        if (sz <= sizeof(buf))
+        sz = build_dns_query(&buf[0], sizeof(buf), *dn, true);
+        if (sz <= sizeof(buf)) {
+            // generate random id
+            evutil_secure_rng_get_bytes(&buf[0], sizeof(uint16_t));
             _test_dns(base, svr, &buf[0], sz);
+        }
     }
 }
 

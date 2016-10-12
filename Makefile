@@ -2,12 +2,12 @@
 OS := $(shell uname)
 LIBS := -levent -lm -largp
 CFLAGS +=-fPIC -O3
-override CFLAGS += -D_BSD_SOURCE -D_DEFAULT_SOURCE
+override CFLAGS += -D_BSD_SOURCE -D_DEFAULT_SOURCE -Wall
 ifeq ($(OS), Linux)
 override CFLAGS += -std=c99 -D_XOPEN_SOURCE=600
 endif
 
-OBJ = main.o log.o cfg.o json.o cdns.o
+OBJ = main.o log.o cfg.o json.o cdns.o dns.o
 
 %.o: %.c $(DEPS)
 	$(CC) -c -o $@ $< $(CFLAGS)

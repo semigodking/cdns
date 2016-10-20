@@ -15,7 +15,6 @@
  */
 #include <stdlib.h>
 #include <string.h>
-#include <search.h>
 #include <sys/types.h>
 #include <sys/uio.h>
 #include <unistd.h>
@@ -30,23 +29,29 @@
 #include "util.h"
 #include "cfg.h"
 #include "log.h"
+#include "blacklist.h"
 
 #define DEFAULT_TIMEOUT_SECONDS 4
 #define DEFAULT_BUFFER_SIZE 4096
 
 #define FLAG_TEST 0x01
 
-struct server_info {
-    char *   ip_port;
-    bool     force_edns;
-    struct sockaddr_in addr;
-    // Fields below are for statistics only
-    uint16_t edns_udp_size;
+struct server_stats {
+    unsigned int n_req;
+    unsigned int n_rsp;
+    unsigned int n_drop;
     int    avg_rtt; // ms
     int    rtt_count;
     int    rtt_next_pos;
     int    rtt[10]; // round trip time
     struct timeval last_rsp_time;
+};
+struct server_info {
+    char *   ip_port;
+    bool     force_edns;
+    struct sockaddr_in addr;
+    uint16_t edns_udp_size;
+    struct server_stats stats;
 };
 
 typedef struct dns_request_t {
@@ -205,92 +210,50 @@ bool cdns_validate_cfg()
 }
 
 /***********************************************************************/
-struct ipv4_key {
-    struct in_addr sin_addr;
-} PACKED;
-
-static void* ipv4_blacklist_root = NULL; 
-
-static int ipv4_key_cmp(const void *a, const void *b)
-{
-     if (a == b)
-         return 0;
-     else if (a< b)
-         return -1;
-     else
-         return 1; 
-}
-
-static void blacklist_add_v4(struct ipv4_key * key)
-{
-    uint32_t addr = key->sin_addr.s_addr;
-    tsearch((void *)addr, &ipv4_blacklist_root, ipv4_key_cmp); 
-}
-
-static void * blacklist_find_v4(struct ipv4_key * key)
-{
-    uint32_t addr = key->sin_addr.s_addr;
-    return tfind((void *)addr, &ipv4_blacklist_root, ipv4_key_cmp);
-}
-
-/*
-static void _blacklist_freenode(void *nodep)
-{
-}
-
-static void blacklist_reset_v4()
-{
-    if (ipv4_blacklist_root) {
-        tdestroy(ipv4_blacklist_root, _blacklist_freenode);
-        ipv4_blacklist_root = NULL;
-    }
-}
-*/
-
 static void add_to_blacklist(const char * rsp, size_t len)
 {
-    const char * p = get_answered_ip(rsp, len);
+    const char * p = dns_get_answered_ip(rsp, len);
+    if (p) {
+        uint16_t rdlength = ntohs(*(const uint16_t *)p);
+        if (rdlength == sizeof(struct ipv4_key)) {
+            p += sizeof(uint16_t);
+            blacklist_add_v4((struct ipv4_key *)p);
+            log_error(LOG_DEBUG, "Add to blacklist: %x %d.%d.%d.%d", rdlength, p[0], p[1], p[2], p[3]);
+        }
+    }
+}
+
+static bool is_ip_in_blacklist(const char * rsp, size_t len)
+{
+    const char * p = dns_get_answered_ip(rsp, len);
     if (p) {
         uint16_t rdlength = ntohs(*(const uint16_t *)p);
         p += sizeof(uint16_t);
-        blacklist_add_v4((struct ipv4_key *)p);
-        log_error(LOG_DEBUG, "Add to blacklist: %x %u.%u.%u.%u", rdlength, p[0], p[1], p[2], p[3]);
+        if (rdlength == sizeof(struct ipv4_key) && blacklist_find_v4((struct ipv4_key *)p)){
+            log_error(LOG_DEBUG, "Found in blacklist: %x %d.%d.%d.%d", rdlength, p[0], p[1], p[2], p[3]);
+            return true;
+        }
     }
+    return false;
 }
-
 /***********************************************************************
  * Logic
  */
 static void update_server_rtt(struct server_info * svr, int rtt_ms)
 {
-    svr->rtt[svr->rtt_next_pos] = rtt_ms;
-    svr->rtt_next_pos += 1;
-    if (svr->rtt_next_pos >= SIZEOF_ARRAY(svr->rtt))
-        svr->rtt_next_pos = 0;
+    svr->stats.rtt[svr->stats.rtt_next_pos] = rtt_ms;
+    svr->stats.rtt_next_pos += 1;
+    if (svr->stats.rtt_next_pos >= SIZEOF_ARRAY(svr->stats.rtt))
+        svr->stats.rtt_next_pos = 0;
 
-    if (svr->rtt_count < SIZEOF_ARRAY(svr->rtt))
-        svr->rtt_count += 1;
+    if (svr->stats.rtt_count < SIZEOF_ARRAY(svr->stats.rtt))
+        svr->stats.rtt_count += 1;
 
     // Calculate average rtt
     long sum = 0;
-    for (int i = 0; i < svr->rtt_count; i++)
-        sum += svr->rtt[i];
-    svr->avg_rtt = sum / svr->rtt_count;
-}
-
-static int verify_request(const char * req, size_t len)
-{
-    struct dns_header_t * header = (struct dns_header_t *)req;
-    if (len < sizeof(*header))
-        return -1;
-
-    if ((header->qr_opcode_aa_tc_rd & DNS_QR) == 0 /* query */
-       && (header->ra_z_rcode & DNS_Z) == 0 /* Z is Zero */
-       && ntohs(header->qdcount) /* some questions */
-       && !ntohs(header->ancount)/* no answers */
-       )
-        return 0;
-    return -1;
+    for (int i = 0; i < svr->stats.rtt_count; i++)
+        sum += svr->stats.rtt[i];
+    svr->stats.avg_rtt = sum / svr->stats.rtt_count;
 }
 
 /*
@@ -300,53 +263,53 @@ static int verify_request(const char * req, size_t len)
  */
 static int verify_response(dns_request * req, const char * rsp, size_t len)
 {
+    int rc = 0;
     struct dns_header_t * header = (struct dns_header_t *)rsp;
     // message too short
     if (len <= sizeof(*header))
         return -1;
 
+    // TODO: Only responses with A/AAAA resources need to be checked
+
     // If server supports EDNS, response with ENDS OPT included is good.
     // Otherwise, it is bad!
     if (req->server->edns_udp_size) {
-        if (get_edns_udp_payload_size(rsp, len)) {
-            log_error(LOG_DEBUG, "Good response (+edns)");
-            return 1;
+        if (dns_get_edns_udp_payload_size(rsp, len)) {
+            log_error(LOG_DEBUG, "Possible good response (+edns)");
+            rc = 1;
         }
         else {
             log_error(LOG_DEBUG, "Bad response");
             add_to_blacklist(rsp, len);
-            return -1;
+            rc = -1;
         }
     }
+
     // Good Responses:
     //   1. with more than 1 answers
     //   2. with addition record(s)
     //   3. NXDomain
-    if (ntohs(header->ancount) > 1
-       || ntohs(header->arcount) > 0
-       || (header->ra_z_rcode & DNS_RC_MASK) == DNS_RC_NXDOMAIN
-       ) {
-        return 1;
-    }
+    if (rc >= 0 && (ntohs(header->ancount) > 1
+                 || ntohs(header->arcount) > 0
+                 || header->rcode  == DNS_RC_NXDOMAIN
+                 ))
+        rc = 1;
+
     // Bad Responses:
     //   1. IP returned in blacklist
-    const char * p = get_answered_ip(rsp, len);
-    if (p) {
-        uint16_t rdlength = ntohs(*(const uint16_t *)p);
-        p += sizeof(uint16_t);
-        if (blacklist_find_v4((struct ipv4_key *)p)){
-            log_error(LOG_DEBUG, "Found in blacklist: %x %u.%u.%u.%u", rdlength, p[0], p[1], p[2], p[3]);
-            return -1;
-        }
-    }
-
-    return 0;
+    // TODO: do more check in case correct IP is in blacklist
+    if (rc >= 0 && is_ip_in_blacklist(rsp, len))
+        rc = -1;
+    return rc;
 }
 
 static void cdns_drop_request(dns_request * req)
 {
     int fd;
     log_error(LOG_DEBUG, "dropping request @ state: %d", req->state);
+
+    if (req->server)
+        req->server->stats.n_drop += 1;
     if (req->resolver)
     {
         fd = event_get_fd(req->resolver);
@@ -389,8 +352,8 @@ static void cdns_readcb(int fd, short what, void *_arg)
     int rtt_ms = rtt.tv_sec * 1000 + rtt.tv_usec/1000;
     
     rc = verify_response(req, &buf[0], pktlen);
-    log_error(LOG_DEBUG, "pktlen: %u rtt_ms: %d avg rtt: %d verify_rc: %d",
-                         pktlen, rtt_ms, svr->avg_rtt, rc);
+    log_error(LOG_DEBUG, "pktlen: %zu rtt_ms: %d avg rtt: %d verify_rc: %d",
+                         pktlen, rtt_ms, svr->stats.avg_rtt, rc);
     if (rc < 0)
         goto continue_waiting;
     if (rc > 0)
@@ -415,6 +378,7 @@ accept:
         }
         else {
             update_server_rtt(svr, rtt_ms);
+            svr->stats.n_rsp += 1;
         }
         req->state = STATE_RESPONSE_SENT;
     }
@@ -478,8 +442,8 @@ _choose_server(struct server_info ** pservers, int count)
     // find out the one with min RTT
     struct server_info * svr = NULL;
     for (i = 0; i < n; i++)
-        if (servers[i]->avg_rtt > 0) {
-            if (!svr || servers[i]->avg_rtt < svr->avg_rtt)
+        if (servers[i]->stats.avg_rtt > 0) {
+            if (!svr || servers[i]->stats.avg_rtt < svr->stats.avg_rtt)
                 svr = servers[i];
         }
     // No server with RTT updated, return random one
@@ -564,7 +528,7 @@ static void cdns_pkt_from_client(int fd, short what, void *_arg)
     if (pktlen == -1)
         goto fail;
 
-    if (pktlen <= sizeof(struct dns_header_t) || verify_request(&buf[0], pktlen)) {
+    if (pktlen <= sizeof(struct dns_header_t) || dns_validate_request(&buf[0], pktlen)) {
         log_error(LOG_INFO, "incomplete or malformed DNS request");
         goto fail;
     }
@@ -580,7 +544,7 @@ static void cdns_pkt_from_client(int fd, short what, void *_arg)
     destaddr = &req->server->addr;
 
     // append ENDS OPT
-    size_t new_size = append_edns_opt(&buf[0], pktlen, sizeof(buf));
+    size_t new_size = dns_append_edns_opt(&buf[0], pktlen, sizeof(buf));
     if (new_size <= sizeof(buf))
         pktlen = new_size;
  
@@ -592,6 +556,7 @@ static void cdns_pkt_from_client(int fd, short what, void *_arg)
         goto fail;
     }
     gettimeofday(&req->req_fwd_time, 0);
+    req->server->stats.n_req += 1;
     req->resolver = event_new(base, relay_fd, EV_READ | EV_PERSIST, cdns_readcb, req);
     if (!req->resolver) {
         log_errno(LOG_ERR, "event_new");
@@ -637,7 +602,7 @@ static void test_readcb(int fd, short what, void *_arg)
     timersub(&tv, &req->test_start, &rtt);
 
     if (!req->server->edns_udp_size) {
-        req->server->edns_udp_size = get_edns_udp_payload_size(&buf[0], pktlen);
+        req->server->edns_udp_size = dns_get_edns_udp_payload_size(&buf[0], pktlen);
         if (req->server->edns_udp_size)
             log_error(LOG_INFO, "Cool! DNS server %s:%u supports EDNS with UDP payload size: %u",
                     evutil_inet_ntop(req->server->addr.sin_family,
@@ -649,7 +614,7 @@ static void test_readcb(int fd, short what, void *_arg)
     }
     if (req->server->edns_udp_size) {
         // update server average rtt        
-        req->server->avg_rtt = rtt.tv_sec * 1000 + rtt.tv_usec/1000;
+        req->server->stats.avg_rtt = rtt.tv_sec * 1000 + rtt.tv_usec/1000;
     }
     else {
         // Set timeout and wait for next response.
@@ -714,7 +679,7 @@ fail:
 
 static char * dn_to_test[] = {"www.baidu.com",
                               "facebook.com",
-                              "nonexist.twitter.com"
+                              "nonexist.twitter.com",
                              };
 static void test_dns(struct event_base * base, struct server_info * svr)
 {
@@ -723,7 +688,7 @@ static void test_dns(struct event_base * base, struct server_info * svr)
     char ** dn;
 
     FOREACH(dn, dn_to_test) {
-        sz = build_dns_query(&buf[0], sizeof(buf), *dn, true);
+        sz = dns_build_a_query(&buf[0], sizeof(buf), *dn, true);
         if (sz <= sizeof(buf)) {
             // generate random id
             evutil_secure_rng_get_bytes(&buf[0], sizeof(uint16_t));
@@ -817,13 +782,15 @@ void cdns_debug_dump()
     log_error(LOG_INFO, "Dumping data for DNS servers:");
 
     for (int i = 0; i < g_svr_count; i++) 
-        log_error(LOG_INFO, "DNS %s:%u:  avg rtt: %ums",
+        log_error(LOG_INFO, "DNS %s:%u: rsp/req: %u/%u avg rtt: %ums",
                             evutil_inet_ntop(g_svr_cfg[i].addr.sin_family,
                                              &g_svr_cfg[i].addr.sin_addr,
                                              &buf[0],
                                              sizeof(buf)),
                             ntohs(g_svr_cfg[i].addr.sin_port),
-                            g_svr_cfg[i].avg_rtt);
+                            g_svr_cfg[i].stats.n_rsp,
+                            g_svr_cfg[i].stats.n_req,
+                            g_svr_cfg[i].stats.avg_rtt);
 
     log_error(LOG_INFO, "End of data dumping.");
 

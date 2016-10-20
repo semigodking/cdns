@@ -7,7 +7,7 @@ ifeq ($(OS), Linux)
 override CFLAGS += -std=c99 -D_XOPEN_SOURCE=600
 endif
 
-OBJ = main.o log.o cfg.o json.o cdns.o dns.o
+OBJ = main.o log.o cfg.o json.o cdns.o dns.o blacklist.o
 
 %.o: %.c $(DEPS)
 	$(CC) -c -o $@ $< $(CFLAGS)

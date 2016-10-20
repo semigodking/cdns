@@ -38,7 +38,7 @@ include_directories ("${PROJECT_BINARY_DIR}")
 set(CMAKE_REQUIRED_LIBRARIES ${CMAKE_REQUIRED_LIBRARIES} event m)
 set (EXTRA_LIBS ${EXTRA_LIBS} ${CMAKE_REQUIRED_LIBRARIES})
 # add the executable
-add_executable (cdns  main.c log.c json.c cfg.c cdns.c dns.c)
+add_executable (cdns  main.c log.c json.c cfg.c cdns.c dns.c blacklist.c)
 target_link_libraries (cdns  ${EXTRA_LIBS})
  
 # add the install targets

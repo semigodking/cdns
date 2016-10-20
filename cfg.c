@@ -151,6 +151,9 @@ void cfg_reset_items(config_item *items)
                 }
                 items->value = NULL;
                 break;
+            default:
+                // Should not be here
+                break;
             }
         }
         else {
@@ -166,6 +169,9 @@ void cfg_reset_items(config_item *items)
             case cdt_object:
                 // Recursively reset subitems of object
                 cfg_reset_items(items->subitems);
+                break;
+            default:
+                 // No need to free memory
                 break;
             }
         }
@@ -324,6 +330,8 @@ static bool save_list_values(json_value * value, config_item * item)
             if (!acopy_string((char **)item->value + i, li))
                 rc = false;
             break;
+        default:
+            rc = false;
         }
     }
     if (!rc) {

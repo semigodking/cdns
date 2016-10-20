@@ -11,7 +11,7 @@ as up stream server.
 The following libraries are required.
 
 * libevent2
-* argp-standalone (Required for OpenWRT build only)
+* argp-standalone (Required for OpenWRT/FreeBSD build only)
 
 ### Steps
 On general linux, run commands below to build with CMake.
@@ -22,7 +22,8 @@ On general linux, run commands below to build with CMake.
 	make
 
 A simple Makefile is also provided for build without CMake.(Note: this
-building method is not to be maintained.
+building method is not to be maintained. It is for easy build on OpenWRT and
+FreeBSD.)
 
 	make
 
@@ -35,10 +36,19 @@ cross compile. This is an example:
 	export CFLAGS="-mips32 -mtune=mips32 -I$TARGET_DIR/usr/include/ -L$TARGET_DIR/usr/lib/"
 	make CC=mips-openwrt-linux-gcc LD=mips-openwrt-linux-ld
 
+To build on FreeBSD with gmake:
+
+	export CFLAGS="-I/usr/local/include -L/usr/local/lib"
+	gmake
+
 # HOW TO RUN
 Run cdns like this:
 
 	./cdns -c /path/to/config.json
+
+### Check Runtime Information and Statistics
+
+	kill -SIGUSR1 `pidof cdns`
 
 # Configurations
 You can create your configuration file based on 'config.json.example'.

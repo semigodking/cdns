@@ -76,7 +76,7 @@ static const char * _dns_skip_resources(uint16_t count, const char * p)
     return p;
 }
 
-uint16_t get_edns_udp_payload_size(const char * rsp, size_t len)
+uint16_t dns_get_edns_udp_payload_size(const char * rsp, size_t len)
 {
     struct dns_header_t * header = (struct dns_header_t *)rsp;
     const char * p = (const char *)header;
@@ -126,7 +126,7 @@ uint16_t get_edns_udp_payload_size(const char * rsp, size_t len)
     return 0;
 }
 
-const char * get_answered_ip(const char * rsp, size_t len)
+const char * dns_get_answered_ip(const char * rsp, size_t len)
 {
     struct dns_header_t * header = (struct dns_header_t *)rsp;
     const char * p = (const char *)header;
@@ -160,13 +160,13 @@ const char * get_answered_ip(const char * rsp, size_t len)
     return NULL;
 }
 
-size_t append_edns_opt(char * buf, size_t len, size_t max_len)
+size_t dns_append_edns_opt(char * buf, size_t len, size_t max_len)
 {
     struct dns_header_t * header = (struct dns_header_t *)buf;
     if (len < sizeof(*header))
         return len;
 
-    uint16_t size = get_edns_udp_payload_size(buf, len);
+    uint16_t size = dns_get_edns_udp_payload_size(buf, len);
     if (size)
         return len;
      
@@ -181,14 +181,16 @@ size_t append_edns_opt(char * buf, size_t len, size_t max_len)
 Return required size of buffer for final query. If returned size is larger
 than buffer size, no change is made to buffer.
 */
-size_t build_dns_query(char * buf, size_t size, const char * dn, int edns)
+static size_t build_query(char * buf, size_t size, uint16_t qtype, const char * dn, int edns)
 {
     static char query_hdr[] = {0x10, 0x33,
                   0x01, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01,
                   };
-    static char query_parm[] = {0x00, 0x01, 0x00, 0x01};
 
-    size_t rc = sizeof(query_hdr) + sizeof(query_parm) + strlen(dn) + 2;
+    size_t rc = sizeof(query_hdr)
+                + sizeof(uint16_t) // QTYPE
+                + sizeof(uint16_t) // QCLASS
+                + strlen(dn) + 2;
     rc += (edns ? sizeof(edns_opt) : 0);
 
     char * p = buf;
@@ -213,9 +215,10 @@ size_t build_dns_query(char * buf, size_t size, const char * dn, int edns)
                dn = t + 1;
            }
         }
-
-        memcpy(p, query_parm, sizeof(query_parm));
-        p += sizeof(query_parm);
+        *(uint16_t *)p = htons(qtype);
+        p += sizeof(uint16_t);
+        *(uint16_t *)p = htons(CLASS_IN);
+        p += sizeof(uint16_t);
         if (edns) {
             memcpy(p, edns_opt, sizeof(edns_opt));
             p += sizeof(edns_opt);
@@ -226,3 +229,27 @@ size_t build_dns_query(char * buf, size_t size, const char * dn, int edns)
 }
 
 
+size_t dns_build_a_query(char * buf, size_t size, const char * dn, int edns)
+{
+    return build_query(buf, size, QTYPE_A, dn, edns);
+}
+
+size_t dns_build_ptr_query(char * buf, size_t size, const char * dn, int edns)
+{
+    return build_query(buf, size, QTYPE_PTR, dn, edns);
+}
+
+int dns_validate_request(const char * req, size_t len)
+{
+    struct dns_header_t * header = (struct dns_header_t *)req;
+    if (len < sizeof(*header))
+        return -1;
+
+    if (header->qr == 0 /* query */
+       && header->z == 0 /* Z is Zero */
+       && ntohs(header->qdcount) /* some questions */
+       && !ntohs(header->ancount)/* no answers */
+       )
+        return 0;
+    return -1;
+}

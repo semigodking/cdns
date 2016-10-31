@@ -134,7 +134,6 @@ void cdns_debug_dump();
  
 int main (int argc, char * argv[])
 {
-    int pid;
     /* Handle arguments */
     argp_parse (&arg_def, argc, argv, 0, 0, &prog_arg);
 
@@ -157,15 +156,10 @@ int main (int argc, char * argv[])
     log_open();
 
     if (g_app_cfg.daemon) {
-        pid = fork();
-        if (pid == 0) {
-        }
-        else if (pid == -1) {
-            log_error(LOG_ERR, "fork failed");
+        if (daemon(1, 0)) {
+            log_errno(LOG_ERR, "daemon");
             return -1;
         }
-        else
-            return 0;
     }
     if (g_app_cfg.pidfile)
         write_pidfile(g_app_cfg.pidfile);

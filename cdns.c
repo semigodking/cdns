@@ -34,7 +34,9 @@
 #define DEFAULT_TIMEOUT_SECONDS 4
 #define DEFAULT_BUFFER_SIZE 4096
 
-#define FLAG_TEST 0x01
+// Server flags
+#define SF_EDNS_OPT (0x01 << 0) // Server supports EDNS
+#define SF_NSCOUNT  (0x01 << 1) // Server returns authority records
 
 struct server_stats {
     unsigned int n_req;
@@ -50,6 +52,7 @@ struct server_info {
     char *   ip_port;
     bool     force_edns;
     struct sockaddr_in addr;
+    uint16_t flags;
     uint16_t edns_udp_size;
     struct server_stats stats;
 };
@@ -265,15 +268,16 @@ static int verify_response(dns_request * req, const char * rsp, size_t len)
 {
     int rc = 0;
     struct dns_header_t * header = (struct dns_header_t *)rsp;
-    // message too short
-    if (len <= sizeof(*header))
+
+    // message is too short or is not for this request
+    if (len <= sizeof(*header) || req->id != header->id)
         return -1;
 
     // TODO: Only responses with A/AAAA resources need to be checked
 
     // If server supports EDNS, response with ENDS OPT included is good.
     // Otherwise, it is bad!
-    if (req->server->edns_udp_size) {
+    if (req->server->flags & SF_EDNS_OPT) {
         if (dns_get_edns_udp_payload_size(rsp, len)) {
             log_error(LOG_DEBUG, "Possible good response (+edns)");
             rc = 1;
@@ -287,18 +291,24 @@ static int verify_response(dns_request * req, const char * rsp, size_t len)
 
     // Good Responses:
     //   1. with more than 1 answers
-    //   2. with addition record(s)
-    //   3. NXDomain
+    //   2. with authority record(s)
+    //   3. with addition record(s)
+    //   4. Errors returned
     if (rc >= 0 && (ntohs(header->ancount) > 1
+                 || ntohs(header->nscount) > 0
                  || ntohs(header->arcount) > 0
-                 || header->rcode  == DNS_RC_NXDOMAIN
+                 || header->rcode != DNS_RC_NOERROR
                  ))
+        // TODO: consider to return here
         rc = 1;
 
     // Bad Responses:
     //   1. IP returned in blacklist
+    //   2. No authority records returned while server returns authority records
     // TODO: do more check in case correct IP is in blacklist
     if (rc >= 0 && is_ip_in_blacklist(rsp, len))
+        rc = -1;
+    if (rc >= 0 && (req->server->flags & SF_NSCOUNT) && ntohs(header->nscount) == 0)
         rc = -1;
     return rc;
 }
@@ -310,8 +320,7 @@ static void cdns_drop_request(dns_request * req)
 
     if (req->server)
         req->server->stats.n_drop += 1;
-    if (req->resolver)
-    {
+    if (req->resolver) {
         fd = event_get_fd(req->resolver);
         event_free(req->resolver);
         close(fd);
@@ -339,13 +348,6 @@ static void cdns_readcb(int fd, short what, void *_arg)
     if (pktlen == -1)
         goto finish;
 
-    // learn
-    if (req->state == STATE_RESPONSE_SENT) {
-        // TODO: Unreachable
-        if (pktlen >= sizeof(struct dns_header_t))
-            add_to_blacklist(&buf[0], pktlen);
-        goto finish;
-    }
     // Calculate round trip time
     gettimeofday(&tv, 0);
     timersub(&tv, &req->req_fwd_time, &rtt);
@@ -424,6 +426,8 @@ _choose_server(struct server_info ** pservers, int count)
         }
     }
     count = n;
+    // TODO: servers with SF_NSCOUNT flag set have higher priority
+
     // get a list of servers which support EDNS
     n = 0;
     for (i = 0; i < count; i++) {
@@ -590,6 +594,7 @@ static void test_readcb(int fd, short what, void *_arg)
     struct timeval tv, rtt;
     char  buf[DEFAULT_BUFFER_SIZE];
     size_t pktlen;
+    struct dns_header_t * hdr = (struct dns_header_t *)buf;
 
     if (what & EV_TIMEOUT)
         goto finish;
@@ -601,9 +606,10 @@ static void test_readcb(int fd, short what, void *_arg)
     gettimeofday(&tv, 0);
     timersub(&tv, &req->test_start, &rtt);
 
-    if (!req->server->edns_udp_size) {
+    if (!(req->server->flags & SF_EDNS_OPT)) {
         req->server->edns_udp_size = dns_get_edns_udp_payload_size(&buf[0], pktlen);
-        if (req->server->edns_udp_size)
+        if (req->server->edns_udp_size) {
+            req->server->flags |= SF_EDNS_OPT;
             log_error(LOG_INFO, "Cool! DNS server %s:%u supports EDNS with UDP payload size: %u",
                     evutil_inet_ntop(req->server->addr.sin_family,
                         &req->server->addr.sin_addr,
@@ -611,9 +617,21 @@ static void test_readcb(int fd, short what, void *_arg)
                         sizeof(buf)),
                     ntohs(req->server->addr.sin_port),
                     req->server->edns_udp_size);
+        }
+    }
+    if (!(req->server->flags & SF_NSCOUNT)) {
+        if (ntohs(hdr->nscount) > 0) {
+            req->server->flags |= SF_NSCOUNT;
+            log_error(LOG_INFO, "Cool! DNS server %s:%u returns authority records",
+                    evutil_inet_ntop(req->server->addr.sin_family,
+                        &req->server->addr.sin_addr,
+                        &buf[0],
+                        sizeof(buf)),
+                    ntohs(req->server->addr.sin_port));
+        }
     }
     if (req->server->edns_udp_size) {
-        // update server average rtt        
+        // FIXME: update server average rtt
         req->server->stats.avg_rtt = rtt.tv_sec * 1000 + rtt.tv_usec/1000;
     }
     else {

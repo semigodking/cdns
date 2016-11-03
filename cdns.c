@@ -74,6 +74,7 @@ struct dns_test_request_t {
     struct timeval       test_start;
     struct server_info * server;
     struct event *       resolver;
+    uint16_t             id; // id from request message
 };
 
 typedef enum cdns_state_t {
@@ -308,8 +309,10 @@ static int verify_response(dns_request * req, const char * rsp, size_t len)
     // TODO: do more check in case correct IP is in blacklist
     if (rc >= 0 && is_ip_in_blacklist(rsp, len))
         rc = -1;
-    if (rc >= 0 && (req->server->flags & SF_NSCOUNT) && ntohs(header->nscount) == 0)
+    if (rc >= 0 && (req->server->flags & SF_NSCOUNT) && ntohs(header->nscount) == 0) {
+        log_error(LOG_DEBUG, "Lack of authority records");
         rc = -1;
+    }
     return rc;
 }
 
@@ -588,11 +591,13 @@ fail:
 /***********************************************************************
  * DNS Resolver Delay Checking
  */
+
 static void test_readcb(int fd, short what, void *_arg)
 {
     struct dns_test_request_t * req = _arg;
     struct timeval tv, rtt;
-    char  buf[DEFAULT_BUFFER_SIZE];
+    char   ip_str[INET6_ADDRSTRLEN];
+    char   buf[DEFAULT_BUFFER_SIZE];
     size_t pktlen;
     struct dns_header_t * hdr = (struct dns_header_t *)buf;
 
@@ -600,9 +605,11 @@ static void test_readcb(int fd, short what, void *_arg)
         goto finish;
 
     pktlen = recvfrom(fd, buf, sizeof(buf), 0, NULL, NULL);
-    if (pktlen == -1)
+    if (pktlen == -1 || pktlen < sizeof(*hdr) || (hdr->rcode != DNS_RC_NOERROR))
         goto finish;
 
+    if (hdr->id != req->id)
+        goto finish;
     gettimeofday(&tv, 0);
     timersub(&tv, &req->test_start, &rtt);
 
@@ -613,8 +620,8 @@ static void test_readcb(int fd, short what, void *_arg)
             log_error(LOG_INFO, "Cool! DNS server %s:%u supports EDNS with UDP payload size: %u",
                     evutil_inet_ntop(req->server->addr.sin_family,
                         &req->server->addr.sin_addr,
-                        &buf[0],
-                        sizeof(buf)),
+                        &ip_str[0],
+                        sizeof(ip_str)),
                     ntohs(req->server->addr.sin_port),
                     req->server->edns_udp_size);
         }
@@ -625,8 +632,8 @@ static void test_readcb(int fd, short what, void *_arg)
             log_error(LOG_INFO, "Cool! DNS server %s:%u returns authority records",
                     evutil_inet_ntop(req->server->addr.sin_family,
                         &req->server->addr.sin_addr,
-                        &buf[0],
-                        sizeof(buf)),
+                        &ip_str[0],
+                        sizeof(ip_str)),
                     ntohs(req->server->addr.sin_port));
         }
     }
@@ -664,6 +671,7 @@ static void _test_dns(struct event_base * base, struct server_info * svr, const 
         goto fail;
     }
     tr->server = svr;
+    memcpy(&tr->id, query, sizeof(uint16_t));
 
     relay_fd = forward_dns_request((struct sockaddr *)destaddr, sizeof(*destaddr), query, len);
     if (relay_fd == -1) {

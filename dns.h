@@ -2,6 +2,7 @@
 #define DNS_H_SAT_OCT_08_13_56_39_2016
 
 #include <stdint.h>
+#include <endian.h>
 
 #define DNS_DEFAULT_PORT 53
 

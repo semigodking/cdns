@@ -67,7 +67,7 @@ typedef struct dns_header_t {
     unsigned ad: 1;
     unsigned cd: 1;
     unsigned rcode: 4;  /* response code */
-#endif
+#else
 #if BYTE_ORDER == LITTLE_ENDIAN || BYTE_ORDER == PDP_ENDIAN
     // Byte 3
     unsigned rd: 1;     /* recursion desired */
@@ -81,6 +81,7 @@ typedef struct dns_header_t {
     unsigned ad: 1;
     unsigned z: 1;      /* reserved */
     unsigned ra: 1;     /* recursion available */
+#endif
 #endif
     uint16_t qdcount;
     uint16_t ancount;

@@ -33,6 +33,7 @@
 
 #define DEFAULT_TIMEOUT_SECONDS 4
 #define DEFAULT_BUFFER_SIZE 4096
+#define MAX_SERVERS_FOR_ONE_QUERY  2
 
 // Server flags
 #define SF_EDNS_OPT (0x01 << 0) // Server supports EDNS
@@ -63,7 +64,7 @@ typedef struct dns_request_t {
     uint16_t            flags;
     uint16_t            id; // id from request message
     uint16_t            timeout; /* timeout value for DNS response */
-    struct sockaddr_in  client_addr;
+    struct sockaddr_storage  client_addr;
     struct event *      resolver;
     struct timeval      req_recv_time; 
     struct timeval      req_fwd_time; 
@@ -462,15 +463,26 @@ _choose_server(struct server_info ** pservers, int count)
     return svr;
 }
 
-static struct server_info * choose_server()
+static struct server_info * choose_server(struct server_info ** excludes, int count)
 {
     struct server_info * servers[MAX_SERVERS];
-    int i = 0;
-    int count = g_svr_count <= MAX_SERVERS ? g_svr_count : MAX_SERVERS;
+    int i, j, k;
+    int svr_count = g_svr_count <= MAX_SERVERS ? g_svr_count : MAX_SERVERS;
 
-    for (i = 0; i < count; i++)
-        servers[i] = g_svr_cfg + i;
-    return _choose_server(servers, count);
+    k = 0;
+    for (i = 0; i < svr_count; i++) {
+        bool found = false;
+        for (j = 0; j < count; j++)
+            if (excludes[j] == g_svr_cfg + i) {
+                found = true;
+                break;
+            }
+        if (!found) {
+            servers[k] = g_svr_cfg + i;
+            k += 1;
+        }
+    }
+    return _choose_server(servers, k);
 }
 
 static int forward_dns_request(struct sockaddr * dest_addr, socklen_t dest_len, const void *data, size_t len)
@@ -514,78 +526,90 @@ static void cdns_pkt_from_client(int fd, short what, void *_arg)
     dns_request * req = NULL;
     char  buf[DEFAULT_BUFFER_SIZE];
     struct timeval timeout = {g_cdns_cfg.timeout, 0};
-    struct sockaddr_in * destaddr;
+    struct sockaddr_in * dest_addr;
+    struct sockaddr_storage client_addr;
     socklen_t addr_len;
     ssize_t pktlen;
     int   relay_fd = -1;
-
-    /* allocate and initialize request structure */
-    req = (dns_request *)calloc(sizeof(dns_request), 1);
-    if (!req) {
-        log_error(LOG_ERR, "Out of memeory.");
-        goto fail;
-    }
-    req->state = STATE_NEW;
-    req->timeout = g_cdns_cfg.timeout;
-    gettimeofday(&req->req_recv_time, 0);
+    struct server_info * svr, * svrs[MAX_SERVERS_FOR_ONE_QUERY];
 
     // Receive DNS request and do basic verification
-    addr_len = sizeof(req->client_addr);
-    pktlen = recvfrom(fd, &buf[0], sizeof(buf), 0, (struct sockaddr *)&req->client_addr, &addr_len);
+    addr_len = sizeof(client_addr);
+    pktlen = recvfrom(fd, &buf[0], sizeof(buf), 0, (struct sockaddr *)&client_addr, &addr_len);
     if (pktlen == -1)
-        goto fail;
+        return;
 
     if (pktlen <= sizeof(struct dns_header_t) || dns_validate_request(&buf[0], pktlen)) {
         log_error(LOG_INFO, "incomplete or malformed DNS request");
-        goto fail;
+        return;
     }
-
-    memcpy(&req->id, &buf[0], sizeof(uint16_t));
-
-    // Choose a server to forward DNS request
-    req->server = choose_server();
-    if (!req->server) {
-        log_error(LOG_WARNING, "No valid DNS resolver available");
-        goto fail;
-    }
-    destaddr = &req->server->addr;
 
     // append ENDS OPT
     size_t new_size = dns_append_edns_opt(&buf[0], pktlen, sizeof(buf));
     if (new_size <= sizeof(buf))
         pktlen = new_size;
- 
-    // 1000 ^_^
-    /* Forward DNS request to upstream server */
-    relay_fd = forward_dns_request((struct sockaddr *)destaddr, sizeof(*destaddr), &buf[0], pktlen);
-    if (relay_fd == -1) {
-        log_error(LOG_INFO, "Failed to forward DNS request");
-        goto fail;
-    }
-    gettimeofday(&req->req_fwd_time, 0);
-    req->server->stats.n_req += 1;
-    req->resolver = event_new(base, relay_fd, EV_READ | EV_PERSIST, cdns_readcb, req);
-    if (!req->resolver) {
-        log_errno(LOG_ERR, "event_new");
-        goto fail;
-    }
-    int error = event_add(req->resolver, &timeout);
-    if (error) {
-        log_errno(LOG_ERR, "event_add");
-        goto fail;
-    }
 
-    req->state = STATE_REQUEST_SENT;
-    return;
+    // Choose a server to forward DNS request
+    memset(svrs, 0, sizeof(svrs));
+    svrs[0] = choose_server(NULL, 0);
+    if (!svrs[0]) {
+        log_error(LOG_WARNING, "No valid DNS resolver available");
+        return;
+    }
+    // Choose additional servers to forward DNS requests
+    for (int i = 1; i < SIZEOF_ARRAY(svrs) && svrs[i-1]; i++)
+        svrs[i] = choose_server(&svrs[0], i);
+    // Forward DNS requests via each chosen server 
+    for (int i = 0; i < SIZEOF_ARRAY(svrs); i++) {
+        svr = svrs[i];
+        if (!svr)
+            break;
+        /* allocate and initialize request structure */
+        req = (dns_request *)calloc(sizeof(dns_request), 1);
+        if (!req) {
+            log_error(LOG_ERR, "Out of memeory.");
+            goto fail;
+        }
+        req->state = STATE_NEW;
+        req->timeout = g_cdns_cfg.timeout;
+        gettimeofday(&req->req_recv_time, 0);
+        memcpy(&req->id, &buf[0], sizeof(uint16_t));
+        memcpy(&req->client_addr, &client_addr, sizeof(client_addr));
+        req->server = svr;
+        dest_addr = &req->server->addr;
+
+        // 1000 ^_^
+        /* Forward DNS request to upstream server */
+        relay_fd = forward_dns_request((struct sockaddr *)dest_addr, sizeof(*dest_addr), &buf[0], pktlen);
+        if (relay_fd == -1) {
+            log_error(LOG_INFO, "Failed to forward DNS request");
+            goto fail;
+        }
+        gettimeofday(&req->req_fwd_time, 0);
+        req->server->stats.n_req += 1;
+        req->resolver = event_new(base, relay_fd, EV_READ | EV_PERSIST, cdns_readcb, req);
+        if (!req->resolver) {
+            log_errno(LOG_ERR, "event_new");
+            goto fail;
+        }
+        int error = event_add(req->resolver, &timeout);
+        if (error) {
+            log_errno(LOG_ERR, "event_add");
+            goto fail;
+        }
+
+        req->state = STATE_REQUEST_SENT;
+        continue;
 
 fail:
-    if (req) {
-        if (req->resolver)
-            event_free(req->resolver);
-        free(req);
+        if (req) {
+            if (req->resolver)
+                event_free(req->resolver);
+            free(req);
+        }
+        if (relay_fd >= 0)
+            close(relay_fd);
     }
-    if (relay_fd >= 0)
-        close(relay_fd);
 }
 
 /***********************************************************************

@@ -26,6 +26,9 @@
 #include <sys/types.h>
 #include "log.h"
 
+#ifdef _WIN32
+void syslog(int prio, const char * fmt, ...) {}   // TODO Windows Syslog not supported
+#endif
 typedef void (*log_func)(const char *file, int line, const char *func, int priority, const char *message, const char *appendix);
 
 static void fprint_timestamp(
@@ -80,6 +83,10 @@ int log_preopen(const char * ident, const char *dst, bool log_debug, bool log_in
 		log_msg_next = stderr_msg;
 	}
 	else if (strncmp(dst, syslog_prefix, strlen(syslog_prefix)) == 0) {
+#ifdef _WIN32
+		log_error(LOG_ERR, "syslog is not supported on WIN32 platform!");
+		log_msg_next = stderr_msg;
+#else
 		const char *facility_name = dst + strlen(syslog_prefix);
 		int facility = -1;
 		struct {
@@ -114,8 +121,8 @@ int log_preopen(const char * ident, const char *dst, bool log_debug, bool log_in
 		if (!log_info)
 			log_mask &= ~(LOG_MASK(LOG_INFO));
 		setlogmask(log_mask);
-
 		log_msg_next = syslog_msg;
+#endif
 	}
 	else if (strncmp(dst, file_prefix, strlen(file_prefix)) == 0) {
 		const char *filename = dst + strlen(file_prefix);

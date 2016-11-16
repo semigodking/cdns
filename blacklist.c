@@ -17,6 +17,7 @@
 #define _GNU_SOURCE  // To have tdestroy declared
 
 #include <stdlib.h>
+#include <stdint.h>
 #include <search.h>
 #include "blacklist.h"
 
@@ -49,7 +50,7 @@ static void _blacklist_freenode(void *nodep)
 {
 }
 
-#ifndef __FreeBSD__
+#if !(defined __FreeBSD__ || defined _WIN32)
 void blacklist_reset_v4()
 {
     if (ipv4_blacklist_root) {

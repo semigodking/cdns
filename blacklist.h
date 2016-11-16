@@ -2,7 +2,11 @@
 #ifndef BLACKLIST_H_THU_OCT_20_10_13_25_2016
 #define BLACKLIST_H_THU_OCT_20_10_13_25_2016
 
+#ifdef _WIN32
+#include <winsock2.h>
+#else
 #include <netinet/in.h>
+#endif
 
 #pragma pack(1)
 struct ipv4_key {
@@ -12,7 +16,7 @@ struct ipv4_key {
 
 void * blacklist_find_v4(struct ipv4_key * key);
 void   blacklist_add_v4(struct ipv4_key * key);
-#ifndef __FreeBSD__
+#if !(defined __FreeBSD__ || defined _WIN32)
 void   blacklist_reset_v4();
 #endif
 

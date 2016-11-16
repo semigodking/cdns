@@ -21,11 +21,15 @@
 #include <string.h>
 #include <unistd.h>
 #include <signal.h>
+#ifdef _WIN32
+#include <winsock2.h>
+#else
 #include <sys/socket.h>
-#include <errno.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
+#endif
 #include <argp.h>
+#include <errno.h>
 #include "event2/event.h"
 #include "util.h"
 #include "log.h"
@@ -155,18 +159,40 @@ int main (int argc, char * argv[])
     } 
     log_open();
 
+#ifndef _WIN32
     if (g_app_cfg.daemon) {
         if (daemon(1, 0)) {
             log_errno(LOG_ERR, "daemon");
             return -1;
         }
     }
+#endif
     if (g_app_cfg.pidfile)
         write_pidfile(g_app_cfg.pidfile);
         
+#ifdef _WIN32
+    WORD wVersionRequested;
+    WSADATA wsaData;
+    int err;
+
+    /* Use the MAKEWORD(lowbyte, highbyte) macro declared in Windef.h */
+    wVersionRequested = MAKEWORD(2, 2);
+
+    err = WSAStartup(wVersionRequested, &wsaData);
+    if (err != 0) {
+        /* Tell the user that we could not find a usable */
+        /* Winsock DLL.                                  */
+        log_error(LOG_ERR, "WSAStartup failed with error: %d\n", err);
+        return -1;
+    }
+#endif
+
     /* Start serving */    
     start_server(); 
 
+#ifdef _WIN32
+    WSACleanup();
+#endif
     /* Clean up before exit */
     return 0;
 }
@@ -191,7 +217,6 @@ static int init_signal_handlers(struct event_base * base)
     struct event * terminators[2];
     struct event * dumper = NULL;
     int exit_signals[2] = {SIGTERM, SIGINT};
-    struct sigaction sa;
     int i;
 
     /* Setup signals that terminate program */
@@ -209,7 +234,9 @@ static int init_signal_handlers(struct event_base * base)
         }
     }
 
+#ifndef _WIN32
     /* Do not panic due to broken pipe. */
+    struct sigaction sa;
     memset(&sa, 0, sizeof(struct sigaction));
     sa.sa_handler = SIG_IGN;
     sa.sa_flags = SA_RESTART;
@@ -225,6 +252,7 @@ static int init_signal_handlers(struct event_base * base)
         log_errno(LOG_ERR, "evsignal_add");
         goto fail;
     }
+#endif
 
     return 0;
 

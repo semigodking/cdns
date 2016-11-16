@@ -16,11 +16,20 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/types.h>
+#ifdef _WIN32
+#include <winsock2.h>
+#include <in6addr.h>
+#include <ws2tcpip.h>
+#ifndef timersub
+#define timersub evutil_timersub
+#endif
+#else
 #include <sys/uio.h>
 #include <unistd.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
+#endif
 #include <errno.h>
 
 #include "event2/event.h"

@@ -6,7 +6,9 @@
 #ifdef __FreeBSD__
 #include <sys/endian.h>
 #else
+#ifndef _WIN32
 #include <endian.h>
+#endif
 #endif
 
 #define DNS_DEFAULT_PORT 53
@@ -61,6 +63,7 @@
 */
 typedef struct dns_header_t {
     uint16_t id;
+#ifndef _WIN32
 #if BYTE_ORDER == BIG_ENDIAN
     // Byte 3
     unsigned qr: 1;     /* response flag */
@@ -74,6 +77,7 @@ typedef struct dns_header_t {
     unsigned ad: 1;
     unsigned cd: 1;
     unsigned rcode: 4;  /* response code */
+#endif
 #endif
 #if BYTE_ORDER == LITTLE_ENDIAN || BYTE_ORDER == PDP_ENDIAN
     // Byte 3

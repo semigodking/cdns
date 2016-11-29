@@ -78,51 +78,13 @@ static const char * _dns_skip_resources(uint16_t count, const char * p)
 
 uint16_t dns_get_edns_udp_payload_size(const char * rsp, size_t len)
 {
-    struct dns_header_t * header = (struct dns_header_t *)rsp;
-    const char * p = (const char *)header;
-    uint16_t i;
+    const char * opt = dns_get_edns_opt(rsp, len);
 
-    if (len <= sizeof(*header) || ntohs(header->arcount) == 0)
-        return 0;
-    
-    // skip header
-    p += sizeof(*header);
-    // skip questions
-    p = _dns_skip_questions(ntohs(header->qdcount), p);
-    // skip answers
-    p = _dns_skip_resources(ntohs(header->ancount), p);
-    // skip resources
-    p = _dns_skip_resources(ntohs(header->nscount), p);
-
-    // Check options
-/*
-+------------+--------------+------------------------------+
-| Field Name | Field Type   | Description                  |
-+------------+--------------+------------------------------+
-| NAME       | domain name  | MUST be 0 (root domain)      |
-| TYPE       | u_int16_t    | OPT (41)                     |
-| CLASS      | u_int16_t    | requestor's UDP payload size |
-| TTL        | u_int32_t    | extended RCODE and flags     |
-| RDLEN      | u_int16_t    | length of all RDATA          |
-| RDATA      | octet stream | {attribute,value} pairs      |
-+------------+--------------+------------------------------+
-*/
-    for (i = 0; i < ntohs(header->arcount); i++) {
-        if (*p == 0 && *(uint16_t *)(p + 1) == htons(41)) {
-            return ntohs(*(uint16_t *)(p + 1 + sizeof(uint16_t)));
-        }
-        // skip QNAME
-        p = _dns_skip_qname(p);
-        // QTYPE
-        p += sizeof(uint16_t);
-        // QCLASS
-        p += sizeof(uint16_t);
-        // TTL
-        p += sizeof(uint32_t);
-        // skip rdlength & rdata
-        uint16_t rdlength = ntohs(*(uint16_t *)p);
-        p += sizeof(uint16_t) + rdlength;
-    }
+    if (opt)
+        return ntohs(*(uint16_t *)(opt 
+                                   + 1                // NAME
+                                   + sizeof(uint16_t) // OPT
+                                  ));
     return 0;
 }
 
@@ -163,18 +125,131 @@ const char * dns_get_answered_ip(const char * rsp, size_t len)
 size_t dns_append_edns_opt(char * buf, size_t len, size_t max_len)
 {
     struct dns_header_t * header = (struct dns_header_t *)buf;
+    const char * opt = dns_get_edns_opt(buf, len);
+    // ENDS OPT exists, do nothing to content
+    if (opt)
+        return len;
+    // Too short, do nothing to content 
     if (len < sizeof(*header))
         return len;
-
-    uint16_t size = dns_get_edns_udp_payload_size(buf, len);
-    if (size)
-        return len;
-     
+    // Append EDNS OPT if there's enough space left
     if (max_len >= len + sizeof(edns_opt)) {
         memcpy(buf + len, edns_opt, sizeof(edns_opt));
         header->arcount = htons(ntohs(header->arcount) + 1);
     }
+    // Return new size of content
     return len + sizeof(edns_opt);
+}
+
+void dns_init_query(struct dns_header_t * hdr)
+{
+    if (hdr) {
+        memset(hdr, 0, sizeof(*hdr));
+        hdr->rd = 1;
+    }
+}
+
+uint16_t dns_set_id(struct dns_header_t * hdr, uint16_t id)
+{
+    hdr->id = htons(id);
+    return id;
+}
+
+uint16_t dns_get_id(struct dns_header_t * hdr)
+{
+    return ntohs(hdr->id);
+}
+
+int dns_get_rcode(const char * rsp, size_t len)
+{
+    struct dns_header_t * hdr = (struct dns_header_t *)rsp;
+    const char * opt = dns_get_edns_opt(rsp, len);
+
+    if (!rsp || len < sizeof(struct dns_header_t))
+        return -1;
+
+    if (opt) {
+        // For response with ENDS OPT, extended bits of rcode need to be included.
+        uint8_t rcode_msb = *(opt 
+                                + 1                // NAME
+                                + sizeof(uint16_t) // OPT
+                                + sizeof(uint16_t) // CLASS
+                              );
+        return (rcode_msb << RCODE_BITS) | hdr->rcode;
+    }
+    else {
+        return hdr->rcode;
+    }
+}
+
+const char * dns_get_edns_opt(const char * rsp, size_t len)
+{
+    struct dns_header_t * header = (struct dns_header_t *)rsp;
+    const char * p = (const char *)header;
+    uint16_t i;
+
+    if (len <= sizeof(*header) || ntohs(header->arcount) == 0)
+        return NULL;
+    
+    // skip header
+    p += sizeof(*header);
+    // skip questions
+    p = _dns_skip_questions(ntohs(header->qdcount), p);
+    // skip answers
+    p = _dns_skip_resources(ntohs(header->ancount), p);
+    // skip resources
+    p = _dns_skip_resources(ntohs(header->nscount), p);
+
+    // Check options
+/*
++------------+--------------+------------------------------+
+| Field Name | Field Type   | Description                  |
++------------+--------------+------------------------------+
+| NAME       | domain name  | MUST be 0 (root domain)      |
+| TYPE       | u_int16_t    | OPT (41)                     |
+| CLASS      | u_int16_t    | requestor's UDP payload size |
+| TTL        | u_int32_t    | extended RCODE and flags     |
+| RDLEN      | u_int16_t    | length of all RDATA          |
+| RDATA      | octet stream | {attribute,value} pairs      |
++------------+--------------+------------------------------+
+*/
+    for (i = 0; i < ntohs(header->arcount); i++) {
+        if (*p == 0 && *(uint16_t *)(p + 1) == htons(41)) {
+            return p;
+        }
+        // skip QNAME
+        p = _dns_skip_qname(p);
+        // QTYPE
+        p += sizeof(uint16_t);
+        // QCLASS
+        p += sizeof(uint16_t);
+        // TTL
+        p += sizeof(uint32_t);
+        // skip rdlength & rdata
+        uint16_t rdlength = ntohs(*(uint16_t *)p);
+        p += sizeof(uint16_t) + rdlength;
+    }
+    return NULL;
+}
+
+bool dns_get_inet_qtype(const char * buf, size_t len, uint16_t * qtype)
+{
+    struct dns_header_t * hdr = (struct dns_header_t *)buf;
+    const char * p = (const char *)hdr;
+
+    if (len <= sizeof(*hdr) || ntohs(hdr->qdcount) == 0)
+        return false;
+    
+    // skip header
+    p += sizeof(*hdr);
+    // skip QNAME
+    p = _dns_skip_qname(p);
+    // skip QTYPE
+    if (*(uint16_t *)(p += sizeof(uint16_t)) == htons(CLASS_IN)) {
+        * qtype = ntohs(*(uint16_t *)p);
+        return true;
+    }
+    return false;
 }
 
 /*
@@ -183,11 +258,8 @@ than buffer size, no change is made to buffer.
 */
 static size_t build_query(char * buf, size_t size, uint16_t qtype, const char * dn, int edns)
 {
-    static char query_hdr[] = {0x10, 0x33,
-                  0x01, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01,
-                  };
-
-    size_t rc = sizeof(query_hdr)
+    struct dns_header_t * hdr = (struct dns_header_t *)buf;
+    size_t rc = sizeof(struct dns_header_t)
                 + sizeof(uint16_t) // QTYPE
                 + sizeof(uint16_t) // QCLASS
                 + strlen(dn) + 2;
@@ -195,9 +267,9 @@ static size_t build_query(char * buf, size_t size, uint16_t qtype, const char * 
 
     char * p = buf;
     if (buf && size >= rc) {
-        memcpy(p, query_hdr, sizeof(query_hdr));
-        p += sizeof(query_hdr);
-
+        dns_init_query((struct dns_header_t *)p);
+        p += sizeof(struct dns_header_t);
+        hdr->qdcount = htons(ntohs(hdr->qdcount) + 1);
         for (;;) {
            char * t = strchr(dn, '.');
            if (!t) {
@@ -219,7 +291,9 @@ static size_t build_query(char * buf, size_t size, uint16_t qtype, const char * 
         p += sizeof(uint16_t);
         *(uint16_t *)p = htons(CLASS_IN);
         p += sizeof(uint16_t);
+        // Add EDNS OPT as additional resource if required
         if (edns) {
+            hdr->arcount = htons(ntohs(hdr->arcount) + 1);
             memcpy(p, edns_opt, sizeof(edns_opt));
             p += sizeof(edns_opt);
         }

@@ -2,6 +2,7 @@
 #define DNS_H_SAT_OCT_08_13_56_39_2016
 
 #include <stdint.h>
+#include <stdbool.h>
 #ifdef __FreeBSD__
 #include <sys/endian.h>
 #else
@@ -37,6 +38,8 @@
 
 // class of query
 #define CLASS_IN         1
+
+#define RCODE_BITS       4
 
 #pragma pack(1)
 /*
@@ -93,9 +96,15 @@ typedef struct dns_header_t {
 } dns_header;
 #pragma pack()
 
+void dns_init_query(struct dns_header_t * hdr);
+uint16_t dns_set_id(struct dns_header_t * hdr, uint16_t id);
+uint16_t dns_get_id(struct dns_header_t * hdr);
+int dns_get_rcode(const char * rsp, size_t len);
 size_t dns_append_edns_opt(char * buf, size_t len, size_t max_len);
 const char * dns_get_answered_ip(const char * rsp, size_t len);
+const char * dns_get_edns_opt(const char * rsp, size_t len);
 uint16_t dns_get_edns_udp_payload_size(const char * rsp, size_t len);
+bool dns_get_inet_qtype(const char * buf, size_t len, uint16_t * qtype);
 size_t dns_build_a_query(char * buf, size_t size, const char * dn, int edns);
 size_t dns_build_ptr_query(char * buf, size_t size, const char * dn, int edns);
 int dns_validate_request(const char * req, size_t len);

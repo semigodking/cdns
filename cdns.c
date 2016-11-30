@@ -38,6 +38,7 @@
 // Server flags
 #define SF_EDNS_OPT (0x01 << 0) // Server supports EDNS
 #define SF_NSCOUNT  (0x01 << 1) // Server returns authority records
+#define SF_TEST_DONE (0x01 << 15) // Tests have been done against server
 
 struct server_stats {
     unsigned int n_req;
@@ -478,8 +479,11 @@ static struct server_info * choose_server(struct server_info ** excludes, int co
                 break;
             }
         if (!found) {
-            servers[k] = g_svr_cfg + i;
-            k += 1;
+            // Only put a server as candidate if it has been tested.
+            if (g_svr_cfg[i].flags & SF_TEST_DONE) {
+                servers[k] = g_svr_cfg + i;
+                k += 1;
+            }
         }
     }
     return _choose_server(servers, k);
@@ -637,6 +641,7 @@ static void test_readcb(int fd, short what, void *_arg)
     gettimeofday(&tv, 0);
     timersub(&tv, &req->test_start, &rtt);
 
+    req->server->flags |= SF_TEST_DONE;// Server receives response
     if (!(req->server->flags & SF_EDNS_OPT)) {
         req->server->edns_udp_size = dns_get_edns_udp_payload_size(&buf[0], pktlen);
         if (req->server->edns_udp_size) {
@@ -747,6 +752,43 @@ static void test_dns(struct event_base * base, struct server_info * svr)
     }
 }
 
+static struct event * tester_event = NULL;
+
+static void tester_timer_cb(int sig, short what, void * arg)
+{
+    struct event_base * base = arg;
+    bool found = false;
+    for (int i = 0; i < g_svr_count; i++)
+        if (!(g_svr_cfg[i].flags & SF_TEST_DONE)) {
+            test_dns(base, g_svr_cfg + i);
+            found = true;
+        }
+    if (!found) {
+        // All servers have been tested. Stop timer as no need to do more tests.
+        evtimer_del(tester_event);
+        event_free(tester_event);
+        tester_event = NULL;
+    }
+}
+
+static void start_tester(struct event_base * base)
+{
+    struct timeval tv = {30, 0};
+
+    tester_event = event_new(base, -1, EV_TIMEOUT|EV_PERSIST, tester_timer_cb, base);
+    if (!tester_event) {
+        log_errno(LOG_ERR, "event_new");
+        return;
+    }
+    if (evtimer_add(tester_event, &tv)) {
+        log_errno(LOG_ERR, "event_add");
+        event_free(tester_event);
+        tester_event = NULL;
+    }
+    else
+        // Test all servers immediately
+        event_active(tester_event, 0, 0);
+}
 /***********************************************************************
  * Init / shutdown
  */
@@ -797,8 +839,8 @@ int cdns_init_server(struct event_base * base)
 
     log_error(LOG_INFO, "cdns @ %s:%u", g_cdns_cfg.local_ip, g_cdns_cfg.local_port);
 
-    for (int i = 0; i < g_svr_count; i++)
-        test_dns(base, g_svr_cfg + i);
+    // Start tester to collect information for each server
+    start_tester(base);
     return 0;
 
 fail:

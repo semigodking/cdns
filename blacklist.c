@@ -49,6 +49,7 @@ static void _blacklist_freenode(void *nodep)
 {
 }
 
+#ifndef __FreeBSD__
 void blacklist_reset_v4()
 {
     if (ipv4_blacklist_root) {
@@ -56,5 +57,5 @@ void blacklist_reset_v4()
         ipv4_blacklist_root = NULL;
     }
 }
-
+#endif
 

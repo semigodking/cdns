@@ -2,7 +2,11 @@
 #define DNS_H_SAT_OCT_08_13_56_39_2016
 
 #include <stdint.h>
+#ifdef __FreeBSD__
+#include <sys/endian.h>
+#else
 #include <endian.h>
+#endif
 
 #define DNS_DEFAULT_PORT 53
 

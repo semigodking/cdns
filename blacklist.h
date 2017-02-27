@@ -12,7 +12,9 @@ struct ipv4_key {
 
 void * blacklist_find_v4(struct ipv4_key * key);
 void   blacklist_add_v4(struct ipv4_key * key);
+#ifndef __FreeBSD__
 void   blacklist_reset_v4();
+#endif
 
 
 /* vim:set tabstop=4 softtabstop=4 shiftwidth=4: */

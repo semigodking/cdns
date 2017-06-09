@@ -38,6 +38,7 @@
 // Server flags
 #define SF_EDNS_OPT (0x01 << 0) // Server supports EDNS
 #define SF_NSCOUNT  (0x01 << 1) // Server returns authority records
+#define SF_HIJACKED (0x01 << 14) // Server is hijacked
 #define SF_TEST_DONE (0x01 << 15) // Tests have been done against server
 
 struct server_stats {
@@ -479,8 +480,8 @@ static struct server_info * choose_server(struct server_info ** excludes, int co
                 break;
             }
         if (!found) {
-            // Only put a server as candidate if it has been tested.
-            if (g_svr_cfg[i].flags & SF_TEST_DONE) {
+            // Only put a server as candidate if it has been tested and is not hijacked.
+            if ((g_svr_cfg[i].flags & SF_TEST_DONE) && !(g_svr_cfg[i].flags & SF_HIJACKED)) {
                 servers[k] = g_svr_cfg + i;
                 k += 1;
             }
@@ -628,6 +629,11 @@ static void test_readcb(int fd, short what, void *_arg)
     char   buf[DEFAULT_BUFFER_SIZE];
     size_t pktlen;
     struct dns_header_t * hdr = (struct dns_header_t *)buf;
+    struct sockaddr_in google_addrs [] = {{.sin_family = AF_INET,
+                                           .sin_addr = {.s_addr = inet_addr("8.8.8.8")}},
+                                          {.sin_family = AF_INET,
+                                           .sin_addr = {.s_addr = inet_addr("8.8.4.4")}},
+                                         };
 
     if (what & EV_TIMEOUT)
         goto finish;
@@ -644,7 +650,28 @@ static void test_readcb(int fd, short what, void *_arg)
     req->server->flags |= SF_TEST_DONE;// Server receives response
     if (!(req->server->flags & SF_EDNS_OPT)) {
         req->server->edns_udp_size = dns_get_edns_udp_payload_size(&buf[0], pktlen);
-        if (req->server->edns_udp_size) {
+
+        if (!(req->server->flags & SF_HIJACKED)) {
+            struct sockaddr_in * addr;
+            FOREACH(addr, google_addrs) {
+                if (!evutil_sockaddr_cmp((struct sockaddr *)&req->server->addr,
+                                         (struct sockaddr *)addr, 0)) {
+                    if (req->server->edns_udp_size != 512)
+                        req->server->flags |= SF_HIJACKED;
+                    break;
+                }
+            }
+            if (req->server->flags & SF_HIJACKED) {
+                log_error(LOG_INFO, "Oops! DNS server %s:%u is hijacked with UDP payload size: %u",
+                        evutil_inet_ntop(req->server->addr.sin_family,
+                            &req->server->addr.sin_addr,
+                            &ip_str[0],
+                            sizeof(ip_str)),
+                        ntohs(req->server->addr.sin_port),
+                        req->server->edns_udp_size);
+            }
+        }
+        if (req->server->edns_udp_size && !(req->server->flags & SF_HIJACKED)) {
             req->server->flags |= SF_EDNS_OPT;
             log_error(LOG_INFO, "Cool! DNS server %s:%u supports EDNS with UDP payload size: %u",
                     evutil_inet_ntop(req->server->addr.sin_family,
@@ -655,7 +682,7 @@ static void test_readcb(int fd, short what, void *_arg)
                     req->server->edns_udp_size);
         }
     }
-    if (!(req->server->flags & SF_NSCOUNT)) {
+    if (!(req->server->flags & (SF_NSCOUNT | SF_HIJACKED))) {
         if (ntohs(hdr->nscount) > 0) {
             req->server->flags |= SF_NSCOUNT;
             log_error(LOG_INFO, "Cool! DNS server %s:%u returns authority records",

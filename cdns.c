@@ -172,7 +172,6 @@ config_item cdns_cfg_items[] = {{.key = "listen_ip",
                          .list = true,
                          .subitems_init_cb = servers_init_cb,
                          .subitems_free_cb = servers_free_cb,
-                         .subitems = &cdns_cfg_items[0],
                         },
                         {.key = NULL,}
                        };

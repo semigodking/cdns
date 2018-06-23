@@ -650,7 +650,7 @@ static void test_readcb(int fd, short what, void *_arg)
     if (!(req->server->flags & SF_EDNS_OPT)) {
         req->server->edns_udp_size = dns_get_edns_udp_payload_size(&buf[0], pktlen);
 
-        if (!(req->server->flags & SF_HIJACKED)) {
+        if (req->server->edns_udp_size && !(req->server->flags & SF_HIJACKED)) {
             struct sockaddr_in * addr;
             FOREACH(addr, google_addrs) {
                 if (!evutil_sockaddr_cmp((struct sockaddr *)&req->server->addr,

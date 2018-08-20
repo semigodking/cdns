@@ -328,7 +328,7 @@ static void cdns_drop_request(dns_request * req)
     if (req->resolver) {
         fd = event_get_fd(req->resolver);
         event_free(req->resolver);
-        close(fd);
+        evutil_closesocket(fd);
     }
     free(req);
 }
@@ -519,7 +519,7 @@ static int forward_dns_request(struct sockaddr * dest_addr, socklen_t dest_len, 
     return fd;
 fail:
     if (fd >= 0) {
-        close(fd);
+        evutil_closesocket(fd);
     }
     return -1;
 }
@@ -612,7 +612,7 @@ fail:
             free(req);
         }
         if (relay_fd >= 0)
-            close(relay_fd);
+            evutil_closesocket(relay_fd);
     }
 }
 
@@ -711,7 +711,7 @@ finish:
     if (req->resolver)
         event_free(req->resolver);
     free(req);
-    close(fd);
+    evutil_closesocket(fd);
 }
 
 static void _test_dns(struct event_base * base, struct server_info * svr, const char * query, size_t len)
@@ -755,7 +755,7 @@ fail:
         free(tr);
     }
     if (relay_fd >= 0)
-        close(relay_fd);
+        evutil_closesocket(relay_fd);
 }
 
 static char * dn_to_test[] = {"www.baidu.com",
@@ -872,8 +872,8 @@ int cdns_init_server(struct event_base * base)
 fail:
     cdns_fini_server();
 
-    if (fd != -1 && close(fd) != 0)
-        log_errno(LOG_WARNING, "close");
+    if (fd != -1 && evutil_closesocket(fd) != 0)
+        log_errno(LOG_WARNING, "evutil_closesocket");
 
     return -1;
 }
@@ -886,8 +886,8 @@ void cdns_fini_server()
     if (listener) {
         if (event_del(listener) != 0)
             log_errno(LOG_WARNING, "event_del");
-        if (close(event_get_fd(listener)) != 0)
-            log_errno(LOG_WARNING, "close");
+        if (evutil_closesocket(event_get_fd(listener)) != 0)
+            log_errno(LOG_WARNING, "evutil_closesocket");
         event_free(listener);
         listener = NULL;
     }

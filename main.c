@@ -35,8 +35,8 @@
 
 static const char * program_name = "cdns";
 static const char program_doc[] =
-"cdns - version: 1.0\n"
-"Copyright (C) 2016 Zhuofei Wang <semigodking@gmail.com>\n"
+"cdns - version: 1.1\n"
+"Copyright (C) 2016-2018 Zhuofei Wang <semigodking@gmail.com>\n"
 "\n"
 "cdns cures your DNS.";
 

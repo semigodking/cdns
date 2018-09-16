@@ -54,7 +54,7 @@ struct server_stats {
 struct server_info {
     char *   ip_port;
     bool     force_edns;
-    struct sockaddr_in addr;
+    struct sockaddr_storage addr;
     uint16_t flags;
     uint16_t edns_udp_size;
     struct server_stats stats;
@@ -183,7 +183,8 @@ bool cdns_validate_cfg()
     struct in6_addr addr;
     int len;
 
-    if (evutil_inet_pton(AF_INET, g_cdns_cfg.local_ip, &addr) != 1) {
+    if (evutil_inet_pton(AF_INET, g_cdns_cfg.local_ip, &addr) != 1
+        && evutil_inet_pton(AF_INET6, g_cdns_cfg.local_ip, &addr) != 1) {
         log_error(LOG_ERR, "Invalid IP specified for listening address");
         rc = false;
     }
@@ -199,13 +200,16 @@ bool cdns_validate_cfg()
     }
     for (i = 0; i < g_svr_count; i++) {
         if (g_svr_cfg[i].ip_port) {
+            struct sockaddr * addr = (struct sockaddr*)&g_svr_cfg[i].addr;
             len = sizeof(g_svr_cfg[i].addr);
-            if (evutil_parse_sockaddr_port(g_svr_cfg[i].ip_port, (struct sockaddr *)&g_svr_cfg[i].addr, &len)) {
+            if (evutil_parse_sockaddr_port(g_svr_cfg[i].ip_port, addr, &len)) {
                 log_error(LOG_ERR, "Invalid IP:port pair for upstream DNS server: %s", g_svr_cfg[i].ip_port);
                 rc = false;
             }
-            if (g_svr_cfg[i].addr.sin_port == 0)
-                g_svr_cfg[i].addr.sin_port = htons(DNS_DEFAULT_PORT);
+            if (g_svr_cfg[i].addr.ss_family == AF_INET && ((struct sockaddr_in*)addr)->sin_port == 0)
+                ((struct sockaddr_in*)addr)->sin_port = htons(DNS_DEFAULT_PORT);
+            else if (g_svr_cfg[i].addr.ss_family == AF_INET6 && ((struct sockaddr_in6*)addr)->sin6_port == 0)
+                ((struct sockaddr_in6*)addr)->sin6_port = htons(DNS_DEFAULT_PORT);
         }
         else {
             log_error(LOG_ERR, "IP:port pair is required");
@@ -414,6 +418,16 @@ _choose_server(struct server_info ** pservers, int count)
 {
     struct server_info * valid_servers[MAX_SERVERS];
     struct server_info * servers[MAX_SERVERS];
+    struct sockaddr_in sa_any = {
+        .sin_family = AF_INET,
+        .sin_addr = {.s_addr = htonl(INADDR_ANY)},
+        .sin_port = 0
+    };
+    struct sockaddr_in6 sa6_any = {
+        .sin6_family = AF_INET6,
+        .sin6_addr = in6addr_any,
+        .sin6_port = 0
+    };
     int i, n;
     // no server available
     if (count < 1)
@@ -421,8 +435,9 @@ _choose_server(struct server_info ** pservers, int count)
     // get a list of servers with valid address
     n = 0;
     for (i = 0; i < count; i++) {
-        if (pservers[i]->addr.sin_addr.s_addr != htonl(INADDR_ANY)
-           && pservers[i]->addr.sin_port != 0) {
+        struct sockaddr * addr = (struct sockaddr *)&pservers[i]->addr;
+        if (evutil_sockaddr_cmp(addr, (struct sockaddr *)&sa_any, 1)
+            || evutil_sockaddr_cmp(addr, (struct sockaddr *)&sa6_any, 1)) {
             valid_servers[n] = pservers[i];
             n += 1;
             // hardcoded limitation of 16 servers
@@ -495,7 +510,7 @@ static int forward_dns_request(struct sockaddr * dest_addr, socklen_t dest_len, 
     int rc;
     int fd = -1;
 
-    fd = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+    fd = socket(dest_addr->sa_family, SOCK_DGRAM, IPPROTO_UDP);
     if (fd == -1) {
         log_errno(LOG_ERR, "socket");
         goto fail;
@@ -530,7 +545,7 @@ static void cdns_pkt_from_client(int fd, short what, void *_arg)
     dns_request * req = NULL;
     char  buf[DEFAULT_BUFFER_SIZE];
     struct timeval timeout = {g_cdns_cfg.timeout, 0};
-    struct sockaddr_in * dest_addr;
+    struct sockaddr_storage * dest_addr;
     struct sockaddr_storage client_addr;
     socklen_t addr_len;
     ssize_t pktlen;
@@ -619,20 +634,50 @@ fail:
 /***********************************************************************
  * DNS Resolver Delay Checking
  */
+static bool is_google_dns(const struct sockaddr *addr)
+{
+    struct sockaddr_in google_addrs [] = {
+        {.sin_family = AF_INET,
+         .sin_addr = {.s_addr = inet_addr("8.8.8.8")}},
+        {.sin_family = AF_INET,
+         .sin_addr = {.s_addr = inet_addr("8.8.4.4")}},
+    };
+    struct sockaddr_in6 google_addrs6 [] = {
+        {.sin6_family = AF_INET6},
+        {.sin6_family = AF_INET6},
+    };
+    evutil_inet_pton(AF_INET6, "2001:4860:4860::8888",
+                    &google_addrs6[0].sin6_addr);
+    evutil_inet_pton(AF_INET6, "2001:4860:4860::8844",
+                    &google_addrs6[1].sin6_addr);
+
+    if (addr->sa_family == AF_INET) {
+        struct sockaddr_in * google_addr;
+        FOREACH(google_addr, google_addrs) {
+            if (!evutil_sockaddr_cmp((struct sockaddr *)google_addr,
+                                     addr, 0))
+                return true;
+        }
+    }
+    else if (addr->sa_family == AF_INET6) {
+        struct sockaddr_in6 * google_addr;
+        FOREACH(google_addr, google_addrs6) {
+            if (!evutil_sockaddr_cmp((struct sockaddr *)google_addr,
+                                     (struct sockaddr *)addr, 0))
+                return true;
+        }
+    }
+    return false;
+}
 
 static void test_readcb(int fd, short what, void *_arg)
 {
     struct dns_test_request_t * req = _arg;
     struct timeval tv, rtt;
-    char   ip_str[INET6_ADDRSTRLEN];
+    char   ip_str[INET_ADDR_PORT_STRLEN];
     char   buf[DEFAULT_BUFFER_SIZE];
     size_t pktlen;
     struct dns_header_t * hdr = (struct dns_header_t *)buf;
-    struct sockaddr_in google_addrs [] = {{.sin_family = AF_INET,
-                                           .sin_addr = {.s_addr = inet_addr("8.8.8.8")}},
-                                          {.sin_family = AF_INET,
-                                           .sin_addr = {.s_addr = inet_addr("8.8.4.4")}},
-                                         };
 
     if (what & EV_TIMEOUT)
         goto finish;
@@ -651,45 +696,31 @@ static void test_readcb(int fd, short what, void *_arg)
         req->server->edns_udp_size = dns_get_edns_udp_payload_size(&buf[0], pktlen);
 
         if (req->server->edns_udp_size && !(req->server->flags & SF_HIJACKED)) {
-            struct sockaddr_in * addr;
-            FOREACH(addr, google_addrs) {
-                if (!evutil_sockaddr_cmp((struct sockaddr *)&req->server->addr,
-                                         (struct sockaddr *)addr, 0)) {
-                    if (req->server->edns_udp_size != 512)
-                        req->server->flags |= SF_HIJACKED;
-                    break;
-                }
+            if (is_google_dns((const struct sockaddr *)&req->server->addr)
+                && req->server->edns_udp_size != 512) {
+                req->server->flags |= SF_HIJACKED;
             }
             if (req->server->flags & SF_HIJACKED) {
-                log_error(LOG_INFO, "Oops! DNS server %s:%u is hijacked with UDP payload size: %u",
-                        evutil_inet_ntop(req->server->addr.sin_family,
-                            &req->server->addr.sin_addr,
-                            &ip_str[0],
-                            sizeof(ip_str)),
-                        ntohs(req->server->addr.sin_port),
+                log_error(LOG_INFO, "Oops! DNS server %s is hijacked with UDP payload size: %u",
+                        fmt_sockaddr_port((struct sockaddr *)&req->server->addr,
+                                           &ip_str[0], sizeof(ip_str)),
                         req->server->edns_udp_size);
             }
         }
         if (req->server->edns_udp_size && !(req->server->flags & SF_HIJACKED)) {
             req->server->flags |= SF_EDNS_OPT;
-            log_error(LOG_INFO, "Cool! DNS server %s:%u supports EDNS with UDP payload size: %u",
-                    evutil_inet_ntop(req->server->addr.sin_family,
-                        &req->server->addr.sin_addr,
-                        &ip_str[0],
-                        sizeof(ip_str)),
-                    ntohs(req->server->addr.sin_port),
+            log_error(LOG_INFO, "Cool! DNS server %s supports EDNS with UDP payload size: %u",
+                    fmt_sockaddr_port((struct sockaddr *)&req->server->addr,
+                                       &ip_str[0], sizeof(ip_str)),
                     req->server->edns_udp_size);
         }
     }
     if (!(req->server->flags & (SF_NSCOUNT | SF_HIJACKED))) {
         if (ntohs(hdr->nscount) > 0) {
             req->server->flags |= SF_NSCOUNT;
-            log_error(LOG_INFO, "Cool! DNS server %s:%u returns authority records",
-                    evutil_inet_ntop(req->server->addr.sin_family,
-                        &req->server->addr.sin_addr,
-                        &ip_str[0],
-                        sizeof(ip_str)),
-                    ntohs(req->server->addr.sin_port));
+            log_error(LOG_INFO, "Cool! DNS server %s returns authority records",
+                    fmt_sockaddr_port((struct sockaddr *)&req->server->addr,
+                                       &ip_str[0], sizeof(ip_str)));
         }
     }
     if (req->server->edns_udp_size) {
@@ -716,7 +747,7 @@ finish:
 
 static void _test_dns(struct event_base * base, struct server_info * svr, const char * query, size_t len)
 {
-    struct sockaddr_in * destaddr = &svr->addr;
+    struct sockaddr_storage * destaddr = &svr->addr;
     struct timeval timeout = {DEFAULT_TIMEOUT_SECONDS, 0};
     int relay_fd = -1;
 
@@ -824,16 +855,24 @@ int cdns_init_server(struct event_base * base)
 {
     int error;
     int fd = -1;
-    struct sockaddr_in addr;
+    struct sockaddr_storage addr;
+    struct sockaddr_in * addr4 = (struct sockaddr_in *)&addr;
+    struct sockaddr_in6 * addr6 = (struct sockaddr_in6 *)&addr;
 
-    if (evutil_inet_pton(AF_INET, g_cdns_cfg.local_ip, &addr.sin_addr) != 1) {
-        log_error(LOG_ERR, "evutil_inet_pton");
+    if (evutil_inet_pton(AF_INET6, g_cdns_cfg.local_ip, &addr6->sin6_addr) == 1) {
+        addr6->sin6_family = AF_INET6;
+        addr6->sin6_port = htons(g_cdns_cfg.local_port);
+    }
+    else if (evutil_inet_pton(AF_INET, g_cdns_cfg.local_ip, &addr4->sin_addr) == 1) {
+        addr4->sin_family = AF_INET;
+        addr4->sin_port = htons(g_cdns_cfg.local_port);
+    }
+    else {
+        log_errno(LOG_ERR, "evutil_inet_pton");
         goto fail;
     }
-    addr.sin_family = AF_INET;
-    addr.sin_port = htons(g_cdns_cfg.local_port);
 
-    fd = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+    fd = socket(addr.ss_family, SOCK_DGRAM, IPPROTO_UDP);
     if (fd == -1) {
         log_errno(LOG_ERR, "socket");
         goto fail;
@@ -895,21 +934,18 @@ void cdns_fini_server()
 
 void cdns_debug_dump()
 {
-    char buf[INET6_ADDRSTRLEN];
+    char buf[INET_ADDR_PORT_STRLEN];
 
     log_error(LOG_INFO, "Dumping data for DNS servers:");
 
-    for (int i = 0; i < g_svr_count; i++) 
-        log_error(LOG_INFO, "DNS %s:%u: rsp/req: %u/%u avg rtt: %ums",
-                            evutil_inet_ntop(g_svr_cfg[i].addr.sin_family,
-                                             &g_svr_cfg[i].addr.sin_addr,
-                                             &buf[0],
-                                             sizeof(buf)),
-                            ntohs(g_svr_cfg[i].addr.sin_port),
+    for (int i = 0; i < g_svr_count; i++) {
+        log_error(LOG_INFO, "DNS %s: rsp/req: %u/%u avg rtt: %ums",
+                            fmt_sockaddr_port((struct sockaddr *)&g_svr_cfg[i].addr,
+                                              &buf[0], sizeof(buf)),
                             g_svr_cfg[i].stats.n_rsp,
                             g_svr_cfg[i].stats.n_req,
                             g_svr_cfg[i].stats.avg_rtt);
-
+    }
     log_error(LOG_INFO, "End of data dumping.");
 
 }

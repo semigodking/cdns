@@ -88,7 +88,7 @@ uint16_t dns_get_edns_udp_payload_size(const char * rsp, size_t len)
     return 0;
 }
 
-const char * dns_get_answered_ip(const char * rsp, size_t len)
+const char * _dns_get_answered_ip(const char * rsp, size_t len, uint16_t qtype)
 {
     struct dns_header_t * header = (struct dns_header_t *)rsp;
     const char * p = (const char *)header;
@@ -120,6 +120,16 @@ const char * dns_get_answered_ip(const char * rsp, size_t len)
         p += sizeof(uint16_t) + rdlength;
     }
     return NULL;
+}
+
+const char * dns_get_answered_ip(const char * rsp, size_t len)
+{
+    return _dns_get_answered_ip(rsp, len, QTYPE_A);
+}
+
+const char * dns_get_answered_ipv6(const char * rsp, size_t len)
+{
+    return _dns_get_answered_ip(rsp, len, QTYPE_AAAA);
 }
 
 size_t dns_append_edns_opt(char * buf, size_t len, size_t max_len)

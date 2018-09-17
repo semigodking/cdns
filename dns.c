@@ -106,14 +106,14 @@ const char * _dns_get_answered_ip(const char * rsp, size_t len, uint16_t qtype)
         // skip QNAME
         p = _dns_skip_qname(p);
         //  TYPE
-        uint16_t qtype = ntohs(*(uint16_t *)p);
+        uint16_t qtype_ = ntohs(*(uint16_t *)p);
         p += sizeof(uint16_t);
         uint16_t qclass = ntohs(*(uint16_t *)p); 
         p += sizeof(uint16_t);
         // skip TTL
         p += sizeof(uint32_t);
         // skip 
-        if (qtype == QTYPE_A && qclass == CLASS_IN)
+        if (qtype == qtype_ && qclass == CLASS_IN)
             return p;
         // skip rdlength & rdata
         uint16_t rdlength = ntohs(*(uint16_t *)p);

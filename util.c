@@ -31,7 +31,7 @@ const char *fmt_sockaddr_port(const struct sockaddr* sa, char* buffer, size_t bu
     if (retval) {
         len = strlen(retval);
         if (sa->sa_family == AF_INET6)
-            snprintf(buffer + len, buffer_size - len, "]:%d", ntohs(port));
+            snprintf(buffer + len + 1, buffer_size - len - 1, "]:%d", ntohs(port));
         else
             snprintf(buffer + len, buffer_size - len, ":%d", ntohs(port));
     }

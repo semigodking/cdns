@@ -1,0 +1,19 @@
+name: linux_build
+
+on: [push]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v1
+    - name: install depends
+      run: |
+        sudo apt update
+        sudo apt install -y cmake libevent-dev
+    - name: Build
+      run: |
+        mkdir build
+        cd build
+        cmake ../
+        make

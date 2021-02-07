@@ -1,4 +1,7 @@
 # cdns
+[![Linux Build Status](https://github.com/semigodking/cdns/workflows/linux_build/badge.svg)](https://github.com/semigodking/cdns/actions)
+[![FreeBSD Build Status](https://github.com/semigodking/cdns/workflows/freebsd_build/badge.svg)](https://github.com/semigodking/cdns/actions)
+
 cdns is an experimental tool to cure your poisoned DNS. The benifits are:
 
 1. No VPN required

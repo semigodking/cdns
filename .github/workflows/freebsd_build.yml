@@ -1,0 +1,26 @@
+name: freebsd_build
+
+on: [push]
+
+jobs:
+  build:
+    runs-on: macos-latest
+    name: A job to run test FreeBSD
+    # env:
+    steps:
+    - uses: actions/checkout@v2
+    - name: Build in FreeBSD
+      id: test
+      uses: vmactions/freebsd-vm@v0.0.9
+      with:
+        # envs: 'MYTOKEN MYTOKEN2'
+        usesh: true
+        prepare: pkg install -y curl libevent cmake argp-standalone
+        run: |
+          pwd
+          freebsd-version
+          export CFLAGS="-I/usr/local/include -L/usr/local/lib"
+          mkdir build
+          cd build
+          cmake ../
+          make

@@ -22,7 +22,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <errno.h>
-#include <sys/time.h>
+#include <time.h>
 #include <sys/types.h>
 #include "log.h"
 
@@ -32,15 +32,24 @@ static void fprint_timestamp(
 		FILE* fd,
 		const char *file, int line, const char *func, int priority, const char *message, const char *appendix)
 {
-	struct timeval tv = { };
-	gettimeofday(&tv, 0);
+    struct tm * ptm;
+    time_t t;
+    char buf[200];
 
-	/* XXX: there is no error-checking, IMHO it's better to lose messages
-	 *      then to die and stop service */
-	if (appendix)
-		fprintf(fd, "%lu.%6.6lu %s:%u %s(...) %s: %s\n", tv.tv_sec, tv.tv_usec, file, line, func, message, appendix);
-	else
-		fprintf(fd, "%lu.%6.6lu %s:%u %s(...) %s\n", tv.tv_sec, tv.tv_usec, file, line, func, message);
+    t = time(NULL);
+    ptm = localtime(&t);
+    if (ptm == NULL || strftime(buf, sizeof(buf), "%F %T", ptm) == 0) {
+        if (appendix)
+            fprintf(fd, "%s:%u %s(...) %s: %s\n", file, line, func, message, appendix);
+        else
+            fprintf(fd, "%s:%u %s(...) %s\n", file, line, func, message);
+    }
+    else {
+        if (appendix)
+            fprintf(fd, "%s %s:%u %s(...) %s: %s\n", buf, file, line, func, message, appendix);
+        else
+            fprintf(fd, "%s %s:%u %s(...) %s\n", buf, file, line, func, message);
+    }
 }
 
 static void stderr_msg(const char *file, int line, const char *func, int priority, const char *message, const char *appendix)

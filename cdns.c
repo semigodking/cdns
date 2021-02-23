@@ -228,7 +228,7 @@ static void add_to_blacklist(const char * rsp, size_t len)
         if (rdlength == sizeof(struct ipv4_key)) {
             p += sizeof(uint16_t);
             blacklist_add_v4((struct ipv4_key *)p);
-            log_error(LOG_DEBUG, "Add to blacklist: %x %d.%d.%d.%d", rdlength, p[0], p[1], p[2], p[3]);
+            log_error(LOG_DEBUG, "Add to blacklist: %x %u.%u.%u.%u", rdlength, p[0], p[1], p[2], p[3]);
         }
     }
 }
@@ -240,7 +240,7 @@ static bool is_ip_in_blacklist(const char * rsp, size_t len)
         uint16_t rdlength = ntohs(*(const uint16_t *)p);
         p += sizeof(uint16_t);
         if (rdlength == sizeof(struct ipv4_key) && blacklist_find_v4((struct ipv4_key *)p)){
-            log_error(LOG_DEBUG, "Found in blacklist: %x %d.%d.%d.%d", rdlength, p[0], p[1], p[2], p[3]);
+            log_error(LOG_DEBUG, "Found in blacklist: %x %u.%u.%u.%u", rdlength, p[0], p[1], p[2], p[3]);
             return true;
         }
     }
@@ -277,9 +277,10 @@ static int verify_response(dns_request * req, const char * rsp, size_t len)
     struct dns_header_t * header = (struct dns_header_t *)rsp;
 
     // message is too short or is not for this request
-    if (len <= sizeof(*header) || req->id != header->id)
+    if (len <= sizeof(*header) || req->id != header->id) {
+        log_error(LOG_INFO, "Bad response");
         return -1;
-
+    }
     // TODO: Only responses with A/AAAA resources need to be checked
 
     // If server supports EDNS, response with ENDS OPT included is good.
@@ -325,7 +326,7 @@ static int verify_response(dns_request * req, const char * rsp, size_t len)
 static void cdns_drop_request(dns_request * req)
 {
     int fd;
-    log_error(LOG_DEBUG, "dropping request @ state: %d", req->state);
+    log_error(LOG_DEBUG, "dropping request %x @ state: %d", req->id, req->state);
 
     if (req->server)
         req->server->stats.n_drop += 1;
@@ -360,11 +361,11 @@ static void cdns_readcb(int fd, short what, void *_arg)
     // Calculate round trip time
     gettimeofday(&tv, 0);
     timersub(&tv, &req->req_fwd_time, &rtt);
-    int rtt_ms = rtt.tv_sec * 1000 + rtt.tv_usec/1000;
+    time_t rtt_ms = rtt.tv_sec * 1000 + rtt.tv_usec/1000;
     
     rc = verify_response(req, &buf[0], pktlen);
-    log_error(LOG_DEBUG, "pktlen: %zu rtt_ms: %d avg rtt: %d verify_rc: %d",
-                         pktlen, rtt_ms, svr->stats.avg_rtt, rc);
+    log_error(LOG_DEBUG, "req_id: %x pktlen: %zu rtt_ms: %ld avg rtt: %u verify_rc: %d",
+                         req->id, pktlen, rtt_ms, svr->stats.avg_rtt, rc);
     if (rc < 0)
         goto continue_waiting;
     if (rc > 0)

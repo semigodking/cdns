@@ -228,7 +228,7 @@ static void add_to_blacklist(const char * rsp, size_t len)
         if (rdlength == sizeof(struct ipv4_key)) {
             p += sizeof(uint16_t);
             blacklist_add_v4((struct ipv4_key *)p);
-            log_error(LOG_DEBUG, "Add to blacklist: %x %u.%u.%u.%u", rdlength, p[0], p[1], p[2], p[3]);
+            log_error(LOG_DEBUG, "Add to blacklist: %x %hhu.%hhu.%hhu.%hhu", rdlength, p[0], p[1], p[2], p[3]);
         }
     }
 }
@@ -240,7 +240,7 @@ static bool is_ip_in_blacklist(const char * rsp, size_t len)
         uint16_t rdlength = ntohs(*(const uint16_t *)p);
         p += sizeof(uint16_t);
         if (rdlength == sizeof(struct ipv4_key) && blacklist_find_v4((struct ipv4_key *)p)){
-            log_error(LOG_DEBUG, "Found in blacklist: %x %u.%u.%u.%u", rdlength, p[0], p[1], p[2], p[3]);
+            log_error(LOG_DEBUG, "Found in blacklist: %x %hhu.%hhu.%hhu.%hhu", rdlength, p[0], p[1], p[2], p[3]);
             return true;
         }
     }

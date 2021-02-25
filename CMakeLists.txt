@@ -36,6 +36,13 @@ configure_file (
 include_directories ("${PROJECT_BINARY_DIR}")
  
 set(CMAKE_REQUIRED_LIBRARIES ${CMAKE_REQUIRED_LIBRARIES} event m)
+
+if (${CMAKE_SYSTEM} MATCHES "FreeBSD")
+  include_directories ("/usr/local/include")
+  link_directories("/usr/local/lib")
+  set(CMAKE_REQUIRED_LIBRARIES ${CMAKE_REQUIRED_LIBRARIES} argp)
+endif (${CMAKE_SYSTEM} MATCHES "FreeBSD")
+
 set (EXTRA_LIBS ${EXTRA_LIBS} ${CMAKE_REQUIRED_LIBRARIES})
 # add the executable
 add_executable (cdns  main.c log.c json.c cfg.c cdns.c dns.c blacklist.c

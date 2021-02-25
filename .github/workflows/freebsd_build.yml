@@ -19,7 +19,6 @@ jobs:
         run: |
           pwd
           freebsd-version
-          export CFLAGS="-I/usr/local/include -L/usr/local/lib"
           mkdir build
           cd build
           cmake ../

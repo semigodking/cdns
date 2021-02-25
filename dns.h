@@ -103,6 +103,7 @@ int dns_get_rcode(const char * rsp, size_t len);
 size_t dns_append_edns_opt(char * buf, size_t len, size_t max_len);
 const char * dns_get_answered_ip(const char * rsp, size_t len);
 const char * dns_get_answered_ipv6(const char * rsp, size_t len);
+const char * dns_get_answered_cnname(const char * rsp, size_t len);
 const char * dns_get_edns_opt(const char * rsp, size_t len);
 uint16_t dns_get_edns_udp_payload_size(const char * rsp, size_t len);
 bool dns_get_inet_qtype(const char * buf, size_t len, uint16_t * qtype);

@@ -311,11 +311,14 @@ static int verify_response(dns_request * req, const char * rsp, size_t len)
         rc = 1;
 
     // Bad Responses:
-    //   1. IP returned in blacklist
+    //   1. IP returned in blacklist while no CN name in response
     //   2. No authority records returned while server returns authority records
     // TODO: do more check in case correct IP is in blacklist
-    if (rc >= 0 && is_ip_in_blacklist(rsp, len))
-        rc = -1;
+    if (rc >= 0 && is_ip_in_blacklist(rsp, len)) {
+        const char * pcnname = dns_get_answered_cnname(rsp, len);
+        if (!pcnname)
+            rc = -1;
+    }
     if (rc >= 0 && (req->server->flags & SF_NSCOUNT) && ntohs(header->nscount) == 0) {
         log_error(LOG_DEBUG, "Lack of authority records");
         rc = -1;

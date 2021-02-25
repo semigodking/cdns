@@ -132,6 +132,11 @@ const char * dns_get_answered_ipv6(const char * rsp, size_t len)
     return _dns_get_answered_ip(rsp, len, QTYPE_AAAA);
 }
 
+const char * dns_get_answered_cnname(const char * rsp, size_t len)
+{
+    return _dns_get_answered_ip(rsp, len, QTYPE_CNNAME);
+}
+
 size_t dns_append_edns_opt(char * buf, size_t len, size_t max_len)
 {
     struct dns_header_t * header = (struct dns_header_t *)buf;

@@ -15,6 +15,7 @@ jobs:
       with:
         # envs: 'MYTOKEN MYTOKEN2'
         usesh: true
+        sync: sshfs
         prepare: pkg install -y curl libevent cmake argp-standalone
         run: |
           pwd

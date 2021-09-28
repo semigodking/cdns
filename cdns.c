@@ -54,6 +54,7 @@ struct server_stats {
 struct server_info {
     char *   ip_port;
     bool     force_edns;
+    uint16_t hijack_threshold;  // In milli-seconds, default to 0
     struct sockaddr_storage addr;
     uint16_t flags;
     uint16_t edns_udp_size;
@@ -99,16 +100,12 @@ struct cdns_cfg g_cdns_cfg = {"0.0.0.0", 53, DEFAULT_TIMEOUT_SECONDS,};
 struct server_info * g_svr_cfg = NULL;
 unsigned int g_svr_count = 0;
 
-config_item svritems[] = {{.key = "ip_port",
-                         .type = cdt_string,
-                        },
-                        /*
-                        {.key = "force_edns",
-                         .type = cdt_bool,
-                        },
-                        */
-                        {.key = NULL,}
-                       };
+config_item svritems[] = {
+    { .key = "ip_port", .type = cdt_string, },
+    { .key = "hijack_threshold", .type = cdt_uint16, },
+    /* {.key = "force_edns", .type = cdt_bool, }, */
+    {.key = NULL,}
+};
 
 
 config_item * servers_init_cb(unsigned int count)
@@ -137,6 +134,10 @@ config_item * servers_init_cb(unsigned int count)
             v = cfg_find_item("force_edns", tmp);
             if (v) {
                 v->value = &g_svr_cfg[i].force_edns;
+            }
+            v = cfg_find_item("hijack_threshold", tmp);
+            if (v) {
+                v->value = &g_svr_cfg[i].hijack_threshold;
             }
             tmp += sizeof(svritems);
         }
@@ -347,6 +348,7 @@ static void cdns_readcb(int fd, short what, void *_arg)
     struct server_info * svr = req->server;
     struct timeval tv, rtt;
     char   buf[DEFAULT_BUFFER_SIZE];
+    char   ip_str[INET_ADDR_PORT_STRLEN];
     size_t pktlen;
     int    rc;
 
@@ -361,14 +363,21 @@ static void cdns_readcb(int fd, short what, void *_arg)
     if (pktlen == -1)
         goto finish;
 
+    fmt_sockaddr_port((struct sockaddr *)&req->server->addr, &ip_str[0], sizeof(ip_str));
     // Calculate round trip time
     gettimeofday(&tv, 0);
     timersub(&tv, &req->req_fwd_time, &rtt);
     time_t rtt_ms = rtt.tv_sec * 1000 + rtt.tv_usec/1000;
     
-    rc = verify_response(req, &buf[0], pktlen);
-    log_error(LOG_DEBUG, "req_id: %x pktlen: %zu rtt_ms: %ld avg rtt: %u verify_rc: %d",
-                         req->id, pktlen, rtt_ms, svr->stats.avg_rtt, rc);
+    if (svr->hijack_threshold > 0 && rtt_ms <= svr->hijack_threshold) {
+        log_error(LOG_DEBUG, "Response received from %s too fast!", &ip_str[0]);
+        rc = -1;
+    }
+    else {
+        rc = verify_response(req, &buf[0], pktlen);
+    }
+    log_error(LOG_DEBUG, "svr: %s req_id: %x pktlen: %zu rtt_ms: %ld avg rtt: %u verify_rc: %d",
+              &ip_str[0], req->id, pktlen, rtt_ms, svr->stats.avg_rtt, rc);
     if (rc < 0)
         goto continue_waiting;
     if (rc > 0)
@@ -547,7 +556,8 @@ static void cdns_pkt_from_client(int fd, short what, void *_arg)
 {
     struct event_base * base = _arg;
     dns_request * req = NULL;
-    char  buf[DEFAULT_BUFFER_SIZE];
+    char   buf[DEFAULT_BUFFER_SIZE];
+    char   ip_str[INET_ADDR_PORT_STRLEN];
     struct timeval timeout = {g_cdns_cfg.timeout, 0};
     struct sockaddr_storage * dest_addr;
     struct sockaddr_storage client_addr;
@@ -601,6 +611,8 @@ static void cdns_pkt_from_client(int fd, short what, void *_arg)
         req->server = svr;
         dest_addr = &req->server->addr;
 
+        fmt_sockaddr_port((struct sockaddr *)dest_addr, &ip_str[0], sizeof(ip_str));
+        log_error(LOG_DEBUG, "Forwarding request to %s", &ip_str[0]);
         // 1000 ^_^
         /* Forward DNS request to upstream server */
         relay_fd = forward_dns_request((struct sockaddr *)dest_addr, sizeof(*dest_addr), &buf[0], pktlen);
@@ -692,10 +704,21 @@ static void test_readcb(int fd, short what, void *_arg)
 
     if (hdr->id != req->id)
         goto finish;
+
+    fmt_sockaddr_port((struct sockaddr *)&req->server->addr, &ip_str[0], sizeof(ip_str));
     gettimeofday(&tv, 0);
     timersub(&tv, &req->test_start, &rtt);
+    time_t rtt_ms = rtt.tv_sec * 1000 + rtt.tv_usec/1000;
 
     req->server->flags |= SF_TEST_DONE;// Server receives response
+
+    /*
+    if (req->server->hijack_threshold > 0 && rtt_ms <= req->server->hijack_threshold) {
+        log_error(LOG_DEBUG,
+                  "Ignore fast response from %s in %ldms(Threshold: %ums)!",
+                  &ip_str[0], rtt_ms, req->server->hijack_threshold);
+    }
+    */
     if (!(req->server->flags & SF_EDNS_OPT)) {
         req->server->edns_udp_size = dns_get_edns_udp_payload_size(&buf[0], pktlen);
 
@@ -706,30 +729,24 @@ static void test_readcb(int fd, short what, void *_arg)
             }
             if (req->server->flags & SF_HIJACKED) {
                 log_error(LOG_INFO, "Oops! DNS server %s is hijacked with UDP payload size: %u",
-                        fmt_sockaddr_port((struct sockaddr *)&req->server->addr,
-                                           &ip_str[0], sizeof(ip_str)),
-                        req->server->edns_udp_size);
+                          &ip_str[0], req->server->edns_udp_size);
             }
         }
         if (req->server->edns_udp_size && !(req->server->flags & SF_HIJACKED)) {
             req->server->flags |= SF_EDNS_OPT;
             log_error(LOG_INFO, "Cool! DNS server %s supports EDNS with UDP payload size: %u",
-                    fmt_sockaddr_port((struct sockaddr *)&req->server->addr,
-                                       &ip_str[0], sizeof(ip_str)),
-                    req->server->edns_udp_size);
+                      &ip_str[0], req->server->edns_udp_size);
         }
     }
     if (!(req->server->flags & (SF_NSCOUNT | SF_HIJACKED))) {
         if (ntohs(hdr->nscount) > 0) {
             req->server->flags |= SF_NSCOUNT;
-            log_error(LOG_INFO, "Cool! DNS server %s returns authority records",
-                    fmt_sockaddr_port((struct sockaddr *)&req->server->addr,
-                                       &ip_str[0], sizeof(ip_str)));
+            log_error(LOG_INFO, "Cool! DNS server %s returns authority records", &ip_str[0]);
         }
     }
     if (req->server->edns_udp_size) {
         // FIXME: update server average rtt
-        req->server->stats.avg_rtt = rtt.tv_sec * 1000 + rtt.tv_usec/1000;
+        req->server->stats.avg_rtt = rtt_ms;
     }
     else {
         // Set timeout and wait for next response.

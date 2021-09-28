@@ -21,7 +21,12 @@
             "ip_port": "203.80.96.10"
         },
         {
-            "ip_port": "8.8.8.8:53"
+            "ip_port": "8.8.4.4:53",
+            // Default to zero which means no check for response time.
+            // For non-zero value, if response time (RTT) is smaller than the
+            // value, respone is considered as hijacked and is ignored before
+            // doing any other check.
+            "hijack_threshold": 50
         }
         ]
     }
